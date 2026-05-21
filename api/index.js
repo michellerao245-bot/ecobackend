@@ -1,17 +1,18 @@
 export default async function handler(req, res) {
-  // CORS Bypass Handlers
+  // CORS Bypass Handler
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // Sabhi projects ke liye Welcome JSON Response
+  // Pure ecosystem ke liye dynamic welcome response
   return res.status(200).json({
     status: "EcoBackend is Live 🚀",
-    message: "Welcome to Soltchain Ecosystem Universal Serverless API",
-    activeProjects: {
-      solthub: "https://ecobackend-two.vercel.app/api/hub",
-      ecoTokenCreator: "https://ecobackend-two.vercel.app/api/token-creator",
-      ecoFunGame: "https://ecobackend-two.vercel.app/api/fun-game",
-      marketingService: "https://ecobackend-two.vercel.app/api/marketing/campaign"
+    message: "Welcome to Soltchain Ecosystem Universal API Server",
+    database_security: "Row Level Security (RLS) Restricted",
+    active_connected_modules: {
+      solthub: "/api/hub",
+      eco_token_creator: "/api/token-creator",
+      eco_fun_game: "/api/fun-game",
+      marketing_service: "/api/marketing/campaign"
     },
-    systemTime: new Date().toISOString()
+    system_timestamp: new Date().toISOString()
   });
 }
