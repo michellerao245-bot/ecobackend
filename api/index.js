@@ -1,8 +1,15 @@
 export default async function handler(req, res) {
-  // CORS Bypass Handler
-  if (req.method === 'OPTIONS') return res.status(200).end();
+  // CORS Headers (Bbrowser-level CORS blocks se bachne ke liye)
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
 
-  // Pure ecosystem ke liye dynamic welcome response
+  // Handle OPTIONS request (OPTIONS pre-flight check handle karne ke liye)
+  if (req.method === "OPTIONS") {
+    return res.status(200).end();
+  }
+
+  // Main API Response
   return res.status(200).json({
     status: "EcoBackend is Live 🚀",
     message: "Welcome to Soltchain Ecosystem Universal API Server",
