@@ -1,7 +1,14 @@
+
 import { createClient } from "@supabase/supabase-js";
 
-const supabaseUrl = process.env.SUPABASE_URL;
-// Agar service role key available hai toh use use karega, nahi toh anon_key ko fallback banayega
-const supabaseSecretKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
+// Ensure ye variables aapke .env file mein exist karte hain
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export const supabase = createClient(supabaseUrl, supabaseSecretKey);
+if (!supabaseUrl || !supabaseAnonKey) {
+  throw new Error("Missing Supabase environment variables!");
+}
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
+
+export default supabase;
