@@ -10,7 +10,7 @@ export default async function handler(req, res) {
 
   try {
     const body = typeof req.body === "string" ? JSON.parse(req.body) : req.body;
-    const { wallet, username } = body;
+    const { wallet, username, referred_by } = body;
 
     console.log("Received Data:", { wallet, username }); // ✅ Debugging ke liye
 
@@ -19,7 +19,11 @@ export default async function handler(req, res) {
     const { data, error } = await supabase 
     .from("users") 
     .upsert( 
-      [{ wallet_address: wallet, username: username || "Guest" }], 
+      [{ 
+        wallet_address: wallet, 
+        username: username || "Guest",
+      referred_by: referred_by || null   // 🔥 ADD THIS LINE 
+      }], 
       { onConflict: "wallet_address" } 
     ) 
     .select();
