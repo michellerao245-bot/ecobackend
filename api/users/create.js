@@ -16,13 +16,13 @@ export default async function handler(req, res) {
 
     if (!wallet) return res.status(400).json({ error: "Wallet address is required" });
 
-    const { data, error } = await supabase
-      .from("users") // Yahan 'users' tabhi hona chahiye jo Supabase dashboard mein hai
-      .insert([{
-        wallet_address: wallet,
-        username: username || "Guest"
-      }])
-      .select();
+    const { data, error } = await supabase 
+    .from("users") 
+    .upsert( 
+      [{ wallet_address: wallet, username: username || "Guest" }], 
+      { onConflict: "wallet_address" } 
+    ) 
+    .select();
 
     if (error) {
       console.error("Supabase Error Details:", error); // ✅ Error yahan dikhega
