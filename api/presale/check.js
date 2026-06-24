@@ -64,6 +64,17 @@ const getRiskLevel = (score) => {
 
 // --- Handler ---
 export default async function handler(req, res) {
+  // ========== CORS HEADERS (ADDED) ==========
+  res.setHeader('Access-Control-Allow-Origin', 'https://smarttools-one.vercel.app');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  // Handle preflight (OPTIONS) request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  // ==========================================
+
   try {
     const { address, chain = 'bsc' } = req.query;
     if (!address) {
