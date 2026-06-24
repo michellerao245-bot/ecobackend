@@ -1,3 +1,5 @@
+import { getChainId } from '../../utils/chains.js';
+
 export default async function handler(req, res) {
   try {
     const { address, chain = 'bsc' } = req.query;
@@ -9,35 +11,47 @@ export default async function handler(req, res) {
       });
     }
 
-    // Chain ID mapping
-    const chainIds = {
-      ethereum: '1',
-      bsc: '56',
-      polygon: '137',
-      arbitrum: '42161'
-    };
+    const chainId = getChainId(chain);
 
-    const chainId = chainIds[chain] || '56';
-
-    // Parallel fetching for faster performance
+    // Parallel fetching for performance
     const [securityRes, dexRes] = await Promise.all([
-      fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${address}`),
+      chainId !== 'solana' 
+        ? fetch(`https://api.gopluslabs.io/api/v1/token_security/${chainId}?contract_addresses=${address}`) 
+        : Promise.resolve(null),
       fetch(`https://api.dexscreener.com/latest/dex/tokens/${address}`)
     ]);
 
-    const securityData = await securityRes.json();
-    const dexData = await dexRes.json();
+    const securityData = securityRes ? await securityRes.json() : null;
+    const marketData = await dexRes.json();
 
+    // Logic to pick the pair with highest liquidity
+    let bestPair = null;
+    if (marketData?.pairs?.length) {
+      bestPair = marketData.pairs.sort(
+        (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+      )[0];
+    }
+
+    // Response formatting
     return res.status(200).json({
       success: true,
       address,
       chain,
       security: securityData,
-      market: dexData
+      market: bestPair ? {
+        dex: bestPair.dexId,
+        liquidityUsd: bestPair.liquidity?.usd || 0,
+        marketCap: bestPair.marketCap || 0,
+        volume24h: bestPair.volume?.h24 || 0,
+        priceUsd: bestPair.priceUsd || 0,
+        pairAddress: bestPair.pairAddress,
+        pairUrl: bestPair.url
+      } : null,
+      totalPairs: marketData?.pairs?.length || 0
     });
 
   } catch (error) {
-    console.error('API Error:', error);
+    console.error('Presale Check Error:', error);
     return res.status(500).json({ 
       success: false, 
       error: error.message 
