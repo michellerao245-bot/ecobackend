@@ -51,7 +51,6 @@ const calculateRiskScore = (security, market, holders, lock) => {
   const liq = parseFloat(market?.liquidityUsd || 0);
   if (liq > 0 && liq < 10000) score -= 10;
   const hCount = holders?.count || 0;
-  // Agar holder data missing hai (0), to zyada penalty mat do
   if (hCount === 0) score -= 5;
   else if (hCount < 20) score -= 10;
   return Math.max(0, Math.min(100, score));
@@ -85,7 +84,6 @@ const formatCurrency = (value) => {
 
 // --- Handler ---
 export default async function handler(req, res) {
-  // ========== CORS HEADERS ==========
   const allowedOrigins = [
     'https://smarttools-one.vercel.app',
     'http://localhost:5173',
@@ -101,7 +99,6 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-  // ==========================================
 
   try {
     const { address, chain = 'bsc' } = req.query;
@@ -112,7 +109,6 @@ export default async function handler(req, res) {
     const isSolana = isSolanaAddress(address) || chain === 'solana';
     const cleanAddress = address.trim();
 
-    // --- 1. Prepare parallel fetch promises ---
     const promises = {};
 
     if (!isSolana) {
@@ -191,7 +187,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 2. Process DexScreener ---
+    // --- Process DexScreener ---
     let bestPair = null;
     if (dexData?.pairs?.length) {
       const validPairs = dexData.pairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 1000);
@@ -233,7 +229,7 @@ export default async function handler(req, res) {
 
     const smartMoney = birdeyeData || { wallets: 0, netFlow: 'N/A', buys: 0, sells: 0 };
 
-    // --- 3. CoinGecko ---
+    // --- CoinGecko ---
     const tokenSymbol = security?.token_symbol || solanaMeta?.symbol || bestPair?.baseToken?.symbol || 'N/A';
     let geckoData = null;
     if (tokenSymbol !== 'N/A') {
@@ -280,10 +276,9 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 4. Total Supply & Decimals ---
+    // --- Total Supply & Decimals ---
     let totalSupply = security?.total_supply || geckoData?.totalSupply || solanaMeta?.totalSupply || 'N/A';
     let decimals = security?.decimals || geckoData?.decimals || solanaMeta?.decimals || 'N/A';
-    // Known BSC tokens fallback for decimals
     if (decimals === 'N/A' || decimals === 0) {
       const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
       const upperSymbol = symbol.toUpperCase();
@@ -300,7 +295,7 @@ export default async function handler(req, res) {
       if (!isNaN(d)) decimals = d;
     }
 
-    // --- 5. Price (DexScreener first, CoinGecko fallback) ---
+    // --- Price ---
     let finalPrice = marketFromDex?.priceUsd || 0;
     if (geckoData?.priceUsd && geckoData.priceUsd !== 'N/A') {
       const geckoPrice = parseFloat(geckoData.priceUsd);
@@ -314,7 +309,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 6. FDV (price × totalSupply) ---
+    // --- FDV ---
     let fdv = 'N/A';
     if (totalSupply !== 'N/A' && finalPrice > 0) {
       const supply = parseFloat(totalSupply);
@@ -323,23 +318,16 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 7. Market Cap (SMART LOGIC) ---
+    // --- Market Cap ---
     let finalMarketCap = 'N/A';
     const dexMc = marketFromDex?.marketCap || 0;
     const geckoMc = geckoData?.marketCap && geckoData.marketCap !== 'N/A' ? parseFloat(geckoData.marketCap) : 0;
 
-    // Pehle FDV use karo agar available hai
     if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
       finalMarketCap = fdv;
-    }
-    // Agar FDV nahi hai, to CoinGecko use karo
-    else if (geckoMc > 0) {
+    } else if (geckoMc > 0) {
       finalMarketCap = geckoMc;
-    }
-    // Agar FDV nahi aur CoinGecko nahi, to DexScreener use karo (lekin check karo ki galat na ho)
-    else if (dexMc > 0) {
-      // Agar dexMc 1B se zyada hai aur token stablecoin nahi hai, to shayad galat hai
-      // USDT ke liye FDV se compare karo
+    } else if (dexMc > 0) {
       if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
         if (dexMc > fdv * 5) {
           finalMarketCap = fdv;
@@ -351,24 +339,21 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 8. Holders ---
+    // --- Holders ---
     let holderCount = parseInt(security?.holder_count || 0);
-    // Agar holder count 0 hai to N/A dikhao
     let displayHolderCount = holderCount > 0 ? holderCount : 'N/A';
 
-    // --- 9. Top holder percentage ---
     let top10Ratio = (parseFloat(security?.top_10_holder_balance_ratio || 0) * 100);
     let creatorPercent = (parseFloat(security?.creator_percent || 0) * 100);
     let creatorAddress = security?.creator_address || 'N/A';
     let creatorBalance = security?.creator_balance || 'N/A';
 
-    // Agar holder count missing hai to sab N/A karo
     if (holderCount === 0) {
       top10Ratio = 'N/A';
       creatorPercent = 'N/A';
     }
 
-    // --- 10. Liquidity ---
+    // --- Liquidity ---
     const liqUsd = marketFromDex?.liquidityUsd || 0;
     const liquidity = {
       total: liqUsd,
@@ -379,11 +364,11 @@ export default async function handler(req, res) {
       health: liqUsd > 100000 ? 'Excellent' : liqUsd > 10000 ? 'Good' : liqUsd > 0 ? 'Low' : 'None',
     };
 
-    // --- 11. Risk Score ---
+    // --- Risk Score ---
     const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, lock);
     const riskLevel = getRiskLevel(riskScore);
 
-    // --- 12. Launch Status ---
+    // --- Launch Status ---
     const hasMarketData = marketFromDex !== null && marketFromDex.liquidityUsd > 0;
     const hasTrading = marketFromDex && marketFromDex.priceUsd > 0;
 
@@ -398,13 +383,13 @@ export default async function handler(req, res) {
       launch = { status: 'Unknown', icon: '⚪', details: 'Unable to determine launch status.' };
     }
 
-    // --- 13. Is Established? ---
+    // --- Is Established? ---
     const isEstablished = (finalMarketCap !== 'N/A' && typeof finalMarketCap === 'number' && finalMarketCap > 50000000) || holderCount > 50000;
 
-    // --- 14. Investment Score ---
+    // --- Investment Score ---
     let investScore = 'N/A';
     if (isEstablished) {
-      investScore = 90; // Established tokens ko hamesha 90
+      investScore = 90;
     } else if (hasMarketData && holderCount > 0 && liqUsd > 0) {
       let score = 70;
       if (riskScore > 80) score += 15;
@@ -416,7 +401,7 @@ export default async function handler(req, res) {
       investScore = Math.min(100, score);
     }
 
-    // --- 15. Community Score ---
+    // --- Community Score ---
     let communityScore = 30;
     if (holderCount > 100000) communityScore += 30;
     else if (holderCount > 10000) communityScore += 20;
@@ -426,7 +411,7 @@ export default async function handler(req, res) {
     if (isEstablished) communityScore = Math.min(95, communityScore + 30);
     communityScore = Math.min(100, communityScore);
 
-    // --- 16. Grades ---
+    // --- Grades ---
     const gradeSecurity = riskScore !== 'N/A' ? getLetterGrade(riskScore) : 'D';
     const gradeLiquidity = getLetterGrade(lock?.locked ? 85 : (hasMarketData ? 50 : 0));
     const gradeCommunity = getLetterGrade(communityScore);
@@ -442,7 +427,7 @@ export default async function handler(req, res) {
       return getLetterGrade(avg);
     })();
 
-    // --- 17. Score Breakdown ---
+    // --- Score Breakdown ---
     const scoreBreakdown = {
       security: riskScore || 0,
       liquidity: lock?.locked ? 85 : (hasMarketData ? 50 : 0),
@@ -451,7 +436,7 @@ export default async function handler(req, res) {
       developer: 50,
     };
 
-    // --- 18. Launch Readiness ---
+    // --- Launch Readiness ---
     let readiness = 0;
     if (security || solanaMeta) readiness += 20;
     if (hasMarketData && liqUsd > 0) readiness += 25;
@@ -462,7 +447,7 @@ export default async function handler(req, res) {
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- 19. Supply Distribution ---
+    // --- Supply Distribution ---
     const supplyDist = {
       team: typeof creatorPercent === 'number' ? creatorPercent : 0,
       community: Math.max(0, 100 - (typeof creatorPercent === 'number' ? creatorPercent : 0) - (typeof top10Ratio === 'number' ? top10Ratio : 0)),
@@ -470,14 +455,14 @@ export default async function handler(req, res) {
       liquidity: 0,
     };
 
-    // --- 20. Wallet Concentration ---
+    // --- Wallet Concentration ---
     const concentration = {
       top1: typeof creatorPercent === 'number' ? creatorPercent : 0,
       top5: typeof top10Ratio === 'number' ? top10Ratio : (typeof creatorPercent === 'number' ? creatorPercent : 0),
       top10: typeof top10Ratio === 'number' ? top10Ratio : (typeof creatorPercent === 'number' ? creatorPercent : 0),
     };
 
-    // --- 21. Scam Risk ---
+    // --- Scam Risk ---
     let scamSignals = 0;
     if (security?.is_honeypot === '1') scamSignals += 5;
     if (typeof creatorPercent === 'number' && creatorPercent > 90) scamSignals += 3;
@@ -485,14 +470,14 @@ export default async function handler(req, res) {
     if (holderCount > 0 && holderCount < 20) scamSignals += 2;
     const scamRisk = scamSignals > 8 ? '🔴 High' : scamSignals > 5 ? '🟡 Medium' : '🟢 Low';
 
-    // --- 22. Success Probability ---
+    // --- Success Probability ---
     let successProb = 'N/A';
     if (hasMarketData && holderCount > 0) {
       const prob = Math.max(0, Math.min(100, riskScore * 0.4 + (lock?.locked ? 20 : 0) + (typeof creatorPercent === 'number' && creatorPercent < 20 ? 10 : 0) + 10));
       successProb = Math.round(prob);
     }
 
-    // --- 23. AI Verdict ---
+    // --- AI Verdict ---
     let summary = '', aiVerdict = '', overallRecommendation = '';
     if (!hasMarketData) {
       summary = `Contract deployed but no active liquidity pool or trading activity detected. Presale/launch data unavailable. Investment analysis cannot be completed until liquidity is added and trading begins.`;
@@ -528,21 +513,21 @@ export default async function handler(req, res) {
       summary = 'Multiple red flags detected. High risk presale.';
     }
 
-    // --- 24. Tax ---
+    // --- Tax ---
     const tax = {
       buy: parseFloat(security?.buy_tax || 0),
       sell: parseFloat(security?.sell_tax || 0),
       transfer: 0,
     };
 
-    // --- 25. Narrative ---
+    // --- Narrative ---
     const narrative = {
       narrative: 'Other',
       strength: 5,
       trend: 'Unknown',
     };
 
-    // --- 26. Whale Activity ---
+    // --- Whale Activity ---
     const vol = marketFromDex?.volume24h || 0;
     const whaleBuys = vol > 0 ? formatCurrency(vol * 0.3 * 0.6) : 'N/A';
     const whaleSells = vol > 0 ? formatCurrency(vol * 0.3 * 0.4) : 'N/A';
@@ -553,7 +538,7 @@ export default async function handler(req, res) {
     const presale = null;
     const whatIf = { amount: 0, value: 0 };
 
-    // --- 27. Red Flags ---
+    // --- Red Flags ---
     const redFlags = [];
     if (security) {
       if (security.is_owner_renounced !== '1') redFlags.push('Ownership is active – admin can change contract');
@@ -570,7 +555,7 @@ export default async function handler(req, res) {
     }
     if (holderCount > 0 && holderCount < 20) redFlags.push(`Only ${holderCount} holders – extremely low distribution`);
 
-    // --- 28. Pros & Cons ---
+    // --- Pros & Cons ---
     const pros = [];
     const cons = [];
     if (riskScore > 70) pros.push('✅ Strong security score');
@@ -592,7 +577,7 @@ export default async function handler(req, res) {
       cons.push(`❌ Developer owns ${creatorPercent.toFixed(1)}%`);
     }
 
-    // --- 29. Build final response ---
+    // --- Build final response ---
     const response = {
       success: true,
       token: {
