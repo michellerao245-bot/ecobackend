@@ -51,7 +51,6 @@ const calculateRiskScore = (security, market, holders, lock) => {
   const liq = parseFloat(market?.liquidityUsd || 0);
   if (liq > 0 && liq < 10000) score -= 10;
   const hCount = holders?.count || 0;
-  // Agar holder data missing hai (0), to zyada penalty mat do
   if (hCount === 0) score -= 5;
   else if (hCount < 20) score -= 10;
   return Math.max(0, Math.min(100, score));
@@ -115,7 +114,6 @@ export default async function handler(req, res) {
     // --- 1. Prepare parallel fetch promises ---
     const promises = {};
 
-    // GoPlus (EVM)
     if (!isSolana) {
       const cId = getGoPlusChainId(chain);
       promises.goplus = fetchWithTimeout(
@@ -123,12 +121,10 @@ export default async function handler(req, res) {
       );
     }
 
-    // DexScreener (all chains)
     promises.dex = fetchWithTimeout(
       `https://api.dexscreener.com/latest/dex/tokens/${cleanAddress}`
     );
 
-    // Solscan (Solana only)
     if (isSolana) {
       promises.solscan = fetchWithTimeout(
         `https://api.solscan.io/token/${cleanAddress}`,
@@ -137,7 +133,6 @@ export default async function handler(req, res) {
       );
     }
 
-    // Liquidity Lock (EVM)
     if (!isSolana) {
       promises.lock = fetchWithTimeout(
         `https://api.unicrypt.network/api/v1/lock/${cleanAddress}`,
@@ -146,7 +141,6 @@ export default async function handler(req, res) {
       );
     }
 
-    // Birdeye – try public endpoint
     try {
       const birdeyeRes = await fetchWithTimeout(
         `https://public-api.birdeye.so/smart-money/v1/token/list`,
@@ -171,7 +165,6 @@ export default async function handler(req, res) {
       // ignore
     }
 
-    // Execute all promises
     const results = await Promise.allSettled(
       Object.entries(promises).map(async ([key, promise]) => {
         const resp = await promise;
@@ -180,7 +173,6 @@ export default async function handler(req, res) {
       })
     );
 
-    // Parse results
     let goplusData = null,
       dexData = null,
       solscanData = null,
@@ -201,14 +193,12 @@ export default async function handler(req, res) {
     // --- 2. Process DexScreener ---
     let bestPair = null;
     if (dexData?.pairs?.length) {
-      // Sort by liquidity descending and filter pairs with reasonable liquidity (>1000 USD) to avoid scam pairs
       const validPairs = dexData.pairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 1000);
       if (validPairs.length > 0) {
         bestPair = validPairs.sort(
           (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
         )[0];
       } else {
-        // fallback: use the highest liquidity even if below 1000
         bestPair = dexData.pairs.sort(
           (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
         )[0];
@@ -228,13 +218,9 @@ export default async function handler(req, res) {
         }
       : null;
 
-    // --- 3. Process GoPlus Security ---
     const security = goplusData?.result?.[cleanAddress.toLowerCase()] || null;
-
-    // --- 4. Process Solscan ---
     const solanaMeta = solscanData?.data || null;
 
-    // --- 5. Process Lock ---
     const lock = lockData?.locked
       ? {
           locked: lockData.locked,
@@ -244,10 +230,9 @@ export default async function handler(req, res) {
         }
       : null;
 
-    // --- 6. Process Birdeye ---
     const smartMoney = birdeyeData || { wallets: 0, netFlow: 'N/A', buys: 0, sells: 0 };
 
-    // --- 7. CoinGecko (fetch after we have symbol) ---
+    // --- 3. CoinGecko ---
     const tokenSymbol = security?.token_symbol || solanaMeta?.symbol || bestPair?.baseToken?.symbol || 'N/A';
     let geckoData = null;
     if (tokenSymbol !== 'N/A') {
@@ -294,14 +279,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 8. Merge market data: DexScreener first, CoinGecko fallback for price & market cap ---
+    // --- 4. Merge market data ---
     let finalMarket = marketFromDex ? { ...marketFromDex } : null;
     if (finalMarket) {
-      // Agar price galat lag raha hai (e.g., USDT price $7.92), to CoinGecko se override kar do
+      // Price override from gecko if dex price is unrealistic
       if (geckoData?.priceUsd && geckoData.priceUsd !== 'N/A') {
         const dexPrice = finalMarket.priceUsd;
         const geckoPrice = parseFloat(geckoData.priceUsd);
-        // Agar dex price gecko price se 2x zyada ya half hai, to gecko price use karo
         if (dexPrice > 0 && geckoPrice > 0) {
           const ratio = dexPrice / geckoPrice;
           if (ratio > 2 || ratio < 0.5) {
@@ -309,12 +293,7 @@ export default async function handler(req, res) {
           }
         }
       }
-      // Market cap fallback
-      if ((!finalMarket.marketCap || finalMarket.marketCap === 0) && geckoData?.marketCap && geckoData.marketCap !== 'N/A') {
-        finalMarket.marketCap = parseFloat(geckoData.marketCap);
-      }
     } else {
-      // Agar DexScreener se kuch nahi mila, to geckoData se bana lo
       if (geckoData?.priceUsd && geckoData.priceUsd !== 'N/A') {
         finalMarket = {
           dex: 'CoinGecko',
@@ -329,25 +308,74 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 9. Holder Analysis ---
-    const holders = {
+    // --- 5. Holders ---
+    let holders = {
       count: parseInt(security?.holder_count || 0),
-      top10Ratio: (parseFloat(security?.top_10_holder_balance_ratio || 0) * 100) || 'N/A',
-      creatorPercent: (parseFloat(security?.creator_percent || 0) * 100) || 0,
+      top10Ratio: (parseFloat(security?.top_10_holder_balance_ratio || 0) * 100),
+      creatorPercent: (parseFloat(security?.creator_percent || 0) * 100),
       creatorAddress: security?.creator_address || 'N/A',
       creatorBalance: security?.creator_balance || 'N/A',
     };
+    // Agar holder count bada hai aur creatorPercent 0 hai to data missing hai – isliye N/A set karo
+    if (holders.count > 1000000 && holders.creatorPercent === 0) {
+      holders.creatorPercent = 'N/A';
+    }
+    if (holders.count > 1000000 && holders.top10Ratio === 0) {
+      holders.top10Ratio = 'N/A';
+    }
 
-    // --- 10. Total Supply & Decimals ---
+    // --- 6. Total Supply & Decimals ---
     let totalSupply = security?.total_supply || geckoData?.totalSupply || solanaMeta?.totalSupply || 'N/A';
     let decimals = security?.decimals || geckoData?.decimals || solanaMeta?.decimals || 'N/A';
-    // Agar decimals string hai to number me convert karo
+    // Known BSC tokens fallback for decimals
+    if (decimals === 'N/A' || decimals === 0) {
+      const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
+      const upperSymbol = symbol.toUpperCase();
+      if ((upperSymbol === 'USDT' || upperSymbol === 'USDC' || upperSymbol === 'BUSD' || upperSymbol === 'DAI') && chain === 'bsc') {
+        decimals = 18;
+      } else if (upperSymbol === 'USDT' && chain === 'ethereum') {
+        decimals = 6;
+      } else if (upperSymbol === 'USDC' && chain === 'ethereum') {
+        decimals = 6;
+      }
+    }
+    // If decimals is string, convert to number
     if (decimals !== 'N/A') {
       const d = parseInt(decimals);
       if (!isNaN(d)) decimals = d;
     }
 
-    // --- 11. Liquidity Analysis ---
+    // --- 7. FDV ---
+    let fdv = 'N/A';
+    if (totalSupply !== 'N/A' && finalMarket?.priceUsd) {
+      const supply = parseFloat(totalSupply);
+      if (!isNaN(supply) && supply > 0 && finalMarket.priceUsd > 0) {
+        fdv = supply * finalMarket.priceUsd;
+      }
+    }
+
+    // --- 8. Market Cap Override ---
+    // Agar FDV available hai aur DexScreener ki market cap FDV se 10% se kam hai, to FDV use karo
+    if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
+      const dexMc = finalMarket?.marketCap || 0;
+      if (dexMc === 0 || dexMc < fdv * 0.1) {
+        if (finalMarket) {
+          finalMarket.marketCap = fdv;
+        }
+      }
+    }
+    // Agar CoinGecko market cap available hai aur zyada realistic lagta hai, to use karo
+    if (geckoData?.marketCap && geckoData.marketCap !== 'N/A') {
+      const geckoMc = parseFloat(geckoData.marketCap);
+      if (geckoMc > 0 && finalMarket) {
+        const dexMc = finalMarket.marketCap || 0;
+        if (dexMc === 0 || geckoMc > dexMc * 10) {
+          finalMarket.marketCap = geckoMc;
+        }
+      }
+    }
+
+    // --- 9. Liquidity ---
     const liqUsd = finalMarket?.liquidityUsd || 0;
     const liquidity = {
       total: liqUsd,
@@ -358,11 +386,11 @@ export default async function handler(req, res) {
       health: liqUsd > 100000 ? 'Excellent' : liqUsd > 10000 ? 'Good' : liqUsd > 0 ? 'Low' : 'None',
     };
 
-    // --- 12. Risk Score ---
+    // --- 10. Risk Score ---
     const riskScore = calculateRiskScore(security, finalMarket, holders, lock);
     const riskLevel = getRiskLevel(riskScore);
 
-    // --- 13. Launch Status ---
+    // --- 11. Launch Status ---
     const hasMarketData = finalMarket !== null && finalMarket.liquidityUsd > 0;
     const hasTrading = finalMarket && finalMarket.priceUsd > 0;
 
@@ -377,10 +405,10 @@ export default async function handler(req, res) {
       launch = { status: 'Unknown', icon: '⚪', details: 'Unable to determine launch status.' };
     }
 
-    // --- 14. Is Established? ---
+    // --- 12. Is Established? ---
     const isEstablished = (finalMarket && finalMarket.marketCap > 50000000) || holders.count > 50000;
 
-    // --- 15. Red Flags ---
+    // --- 13. Red Flags ---
     const redFlags = [];
     if (security) {
       if (security.is_owner_renounced !== '1') redFlags.push('Ownership is active – admin can change contract');
@@ -391,11 +419,13 @@ export default async function handler(req, res) {
       if (security.is_proxy === '1') redFlags.push('Proxy contract – upgradable');
       if (security.hidden_owner === '1') redFlags.push('Hidden owner detected');
       if (security.is_honeypot === '1') redFlags.push('Honeypot detected');
-      if (holders.creatorPercent > 50) redFlags.push(`Developer owns ${holders.creatorPercent.toFixed(1)}% – high centralization`);
+      if (typeof holders.creatorPercent === 'number' && holders.creatorPercent > 50) {
+        redFlags.push(`Developer owns ${holders.creatorPercent.toFixed(1)}% – high centralization`);
+      }
     }
     if (holders.count > 0 && holders.count < 20) redFlags.push(`Only ${holders.count} holders – extremely low distribution`);
 
-    // --- 16. Pros & Cons ---
+    // --- 14. Pros & Cons ---
     const pros = [];
     const cons = [];
     if (riskScore > 70) pros.push('✅ Strong security score');
@@ -412,10 +442,12 @@ export default async function handler(req, res) {
     if (security?.is_blacklisted === '1') cons.push('❌ Blacklist function');
     if (!lock?.locked && security) cons.push('❌ Liquidity not locked');
     if (security?.is_proxy === '1') cons.push('❌ Upgradeable contract');
-    if (holders.top10Ratio !== 'N/A' && holders.top10Ratio > 50) cons.push('❌ High whale concentration');
-    if (holders.creatorPercent > 50 && security) cons.push(`❌ Developer owns ${holders.creatorPercent.toFixed(1)}%`);
+    if (typeof holders.top10Ratio === 'number' && holders.top10Ratio > 50) cons.push('❌ High whale concentration');
+    if (typeof holders.creatorPercent === 'number' && holders.creatorPercent > 50 && security) {
+      cons.push(`❌ Developer owns ${holders.creatorPercent.toFixed(1)}%`);
+    }
 
-    // --- 17. Investment Score ---
+    // --- 15. Investment Score ---
     let investScore = 'N/A';
     if (hasMarketData && holders.count > 0 && liqUsd > 0) {
       let score = 70;
@@ -424,11 +456,11 @@ export default async function handler(req, res) {
       if (security?.is_owner_renounced === '1') score += 10;
       if (liqUsd > 1000000) score += 10;
       if (holders.count > 100000) score += 5;
-      if (holders.creatorPercent < 20) score += 5;
+      if (typeof holders.creatorPercent === 'number' && holders.creatorPercent < 20) score += 5;
       investScore = Math.min(100, score);
     }
 
-    // --- 18. Hidden Gem & Moon Potential ---
+    // --- 16. Hidden Gem & Moon Potential ---
     let hiddenGemScore = 'N/A';
     if (!isEstablished && hasMarketData && holders.count > 0) {
       hiddenGemScore = Math.min(100, (riskScore) + 10);
@@ -439,7 +471,7 @@ export default async function handler(req, res) {
       moonPotential = Math.min(100, score);
     }
 
-    // --- 19. Community Score ---
+    // --- 17. Community Score ---
     let communityScore = 30;
     if (holders.count > 100000) communityScore += 30;
     else if (holders.count > 10000) communityScore += 20;
@@ -449,27 +481,18 @@ export default async function handler(req, res) {
     if (isEstablished) communityScore = Math.min(95, communityScore + 30);
     communityScore = Math.min(100, communityScore);
 
-    // --- 20. CEX Listing Status ---
+    // --- 18. CEX Listing Status ---
     const isListedOnMajor = (geckoData?.exchanges && geckoData.exchanges.length > 0) || isEstablished;
     const listingStatus = isListedOnMajor ? 'Already Listed' : (hasMarketData ? `${Math.min(100, riskScore + 10)}% Chance` : 'N/A');
     const exchangeIcons = isListedOnMajor ? ['Binance', 'OKX', 'Bybit', 'KuCoin'] : [];
 
-    // --- 21. ATH Tracker ---
+    // --- 19. ATH Tracker ---
     const currentPrice = finalMarket?.priceUsd || 0;
     const athPrice = parseFloat(geckoData?.ath || 0);
     const drawdown = athPrice > 0 && currentPrice > 0 ? ((athPrice - currentPrice) / athPrice * 100) : 0;
     const recoveryMultiplier = athPrice > 0 && currentPrice > 0 ? (athPrice / currentPrice) : 0;
 
-    // --- 22. FDV ---
-    let fdv = 'N/A';
-    if (totalSupply !== 'N/A' && currentPrice > 0) {
-      const supply = parseFloat(totalSupply);
-      if (!isNaN(supply) && supply > 0) {
-        fdv = supply * currentPrice;
-      }
-    }
-
-    // --- 23. Grades ---
+    // --- 20. Grades ---
     const gradeSecurity = riskScore !== 'N/A' ? getLetterGrade(riskScore) : 'D';
     const gradeLiquidity = getLetterGrade(lock?.locked ? 85 : (hasMarketData ? 50 : 0));
     const gradeCommunity = getLetterGrade(communityScore);
@@ -485,7 +508,7 @@ export default async function handler(req, res) {
       return getLetterGrade(avg);
     })();
 
-    // --- 24. Score Breakdown ---
+    // --- 21. Score Breakdown ---
     const scoreBreakdown = {
       security: riskScore || 0,
       liquidity: lock?.locked ? 85 : (hasMarketData ? 50 : 0),
@@ -494,49 +517,48 @@ export default async function handler(req, res) {
       developer: 50,
     };
 
-    // --- 25. Launch Readiness ---
+    // --- 22. Launch Readiness ---
     let readiness = 0;
     if (security || solanaMeta) readiness += 20;
     if (hasMarketData && liqUsd > 0) readiness += 25;
     if (lock?.locked) readiness += 20;
     if (geckoData?.social?.twitter !== 'N/A' || geckoData?.social?.telegram !== 'N/A') readiness += 15;
-    if (holders.creatorPercent < 20) readiness += 10;
+    if (typeof holders.creatorPercent === 'number' && holders.creatorPercent < 20) readiness += 10;
     if (readiness > 0 && readiness < 30) readiness = 10;
-    // Established tokens ko high readiness de do
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- 26. Supply Distribution ---
+    // --- 23. Supply Distribution ---
     const supplyDist = {
-      team: holders.creatorPercent,
-      community: Math.max(0, 100 - holders.creatorPercent - (holders.top10Ratio !== 'N/A' ? holders.top10Ratio : 0)),
+      team: typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 0,
+      community: Math.max(0, 100 - (typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 0) - (typeof holders.top10Ratio === 'number' ? holders.top10Ratio : 0)),
       burn: 0,
       liquidity: 0,
     };
 
-    // --- 27. Wallet Concentration ---
+    // --- 24. Wallet Concentration ---
     const concentration = {
-      top1: holders.creatorPercent,
-      top5: holders.top10Ratio !== 'N/A' ? holders.top10Ratio : holders.creatorPercent,
-      top10: holders.top10Ratio !== 'N/A' ? holders.top10Ratio : holders.creatorPercent,
+      top1: typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 0,
+      top5: typeof holders.top10Ratio === 'number' ? holders.top10Ratio : (typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 0),
+      top10: typeof holders.top10Ratio === 'number' ? holders.top10Ratio : (typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 0),
     };
 
-    // --- 28. Scam Risk ---
+    // --- 25. Scam Risk ---
     let scamSignals = 0;
     if (security?.is_honeypot === '1') scamSignals += 5;
-    if (holders.creatorPercent > 90) scamSignals += 3;
+    if (typeof holders.creatorPercent === 'number' && holders.creatorPercent > 90) scamSignals += 3;
     if (!lock?.locked && hasMarketData) scamSignals += 2;
     if (holders.count > 0 && holders.count < 20) scamSignals += 2;
     const scamRisk = scamSignals > 8 ? '🔴 High' : scamSignals > 5 ? '🟡 Medium' : '🟢 Low';
 
-    // --- 29. Success Probability ---
+    // --- 26. Success Probability ---
     let successProb = 'N/A';
     if (hasMarketData && holders.count > 0) {
-      const prob = Math.max(0, Math.min(100, riskScore * 0.4 + (lock?.locked ? 20 : 0) + (holders.creatorPercent < 20 ? 10 : 0) + 10));
+      const prob = Math.max(0, Math.min(100, riskScore * 0.4 + (lock?.locked ? 20 : 0) + (typeof holders.creatorPercent === 'number' && holders.creatorPercent < 20 ? 10 : 0) + 10));
       successProb = Math.round(prob);
     }
 
-    // --- 30. AI Verdict & Recommendation ---
+    // --- 27. AI Verdict & Recommendation ---
     let summary = '', aiVerdict = '', overallRecommendation = '';
     if (!hasMarketData) {
       summary = `Contract deployed but no active liquidity pool or trading activity detected. Presale/launch data unavailable. Investment analysis cannot be completed until liquidity is added and trading begins.`;
@@ -550,11 +572,11 @@ export default async function handler(req, res) {
       aiVerdict = '🚨 HONEYPOT DETECTED – High Risk. Avoid investing.';
       overallRecommendation = 'Avoid';
       summary = 'Honeypot detected – you cannot sell this token after buying. Strongly avoid.';
-    } else if (holders.creatorPercent > 90 && holders.count < 20) {
+    } else if (typeof holders.creatorPercent === 'number' && holders.creatorPercent > 90 && holders.count < 20) {
       aiVerdict = '⚠️ EXTREME CENTRALIZATION: Developer controls >90% supply and holder count is extremely low. High risk of manipulation.';
       overallRecommendation = 'Extreme Caution';
       summary = 'Highly centralized token with very few holders. Extremely high risk. Only for high-risk speculators.';
-    } else if (riskScore >= 80 && lock?.locked && security?.is_owner_renounced === '1' && (holders.top10Ratio === 'N/A' || holders.top10Ratio < 30)) {
+    } else if (riskScore >= 80 && lock?.locked && security?.is_owner_renounced === '1' && (typeof holders.top10Ratio !== 'number' || holders.top10Ratio < 30)) {
       aiVerdict = 'This presale shows strong security, locked liquidity, and renounced ownership. Low risk.';
       overallRecommendation = 'Safe To Research Further';
       summary = 'Strong security, locked liquidity, and good holder distribution. Low risk presale.';
@@ -572,37 +594,32 @@ export default async function handler(req, res) {
       summary = 'Multiple red flags detected. High risk presale.';
     }
 
-    // --- 31. Tax ---
+    // --- 28. Tax ---
     const tax = {
       buy: parseFloat(security?.buy_tax || 0),
       sell: parseFloat(security?.sell_tax || 0),
       transfer: 0,
     };
 
-    // --- 32. Narrative ---
+    // --- 29. Narrative ---
     const narrative = {
       narrative: 'Other',
       strength: 5,
       trend: 'Unknown',
     };
 
-    // --- 33. Whale Activity (estimated) ---
+    // --- 30. Whale Activity ---
     const vol = finalMarket?.volume24h || 0;
     const whaleBuys = vol > 0 ? formatCurrency(vol * 0.3 * 0.6) : 'N/A';
     const whaleSells = vol > 0 ? formatCurrency(vol * 0.3 * 0.4) : 'N/A';
     const whaleNet = vol > 0 ? formatCurrency(vol * 0.3 * 0.2) : 'N/A';
     const whale = { buys: whaleBuys, sells: whaleSells, netFlow: whaleNet };
 
-    // --- 34. Developer (placeholder) ---
     const developer = { projects: 0, successful: 0, failed: 0, suspectedRugs: 0 };
-
-    // --- 35. Presale (not available) ---
     const presale = null;
-
-    // --- 36. WhatIf (will be recalculated on frontend) ---
     const whatIf = { amount: 0, value: 0 };
 
-    // --- 37. Build final response ---
+    // --- 31. Build final response ---
     const response = {
       success: true,
       token: {
@@ -640,7 +657,13 @@ export default async function handler(req, res) {
         unlockDate: lock?.unlockDate || 'N/A',
         locker: lock?.locker || 'N/A',
       },
-      holders,
+      holders: {
+        count: holders.count,
+        top10Ratio: typeof holders.top10Ratio === 'number' ? holders.top10Ratio : 'N/A',
+        creatorPercent: typeof holders.creatorPercent === 'number' ? holders.creatorPercent : 'N/A',
+        creatorAddress: holders.creatorAddress,
+        creatorBalance: holders.creatorBalance,
+      },
       market: {
         price: finalMarket?.priceUsd || 'N/A',
         priceChange24h: finalMarket?.priceChange24h || 'N/A',
