@@ -51,7 +51,8 @@ const calculateRiskScore = (security, market, holders, lock) => {
   const liq = parseFloat(market?.liquidityUsd || 0);
   if (liq > 0 && liq < 10000) score -= 10;
   const hCount = holders?.count || 0;
-  if (hCount === 0) score -= 20;
+  // Agar holder data missing hai (0), to zyada penalty mat do
+  if (hCount === 0) score -= 5;   // pehle -20 tha
   else if (hCount < 20) score -= 10;
   return Math.max(0, Math.min(100, score));
 };
@@ -305,13 +306,13 @@ export default async function handler(req, res) {
     const riskScore = calculateRiskScore(security, market, holders, lock);
     const riskLevel = getRiskLevel(riskScore);
 
-    // --- 11. Launch Status ---
+    // --- 11. Launch Status (FIXED: holders optional) ---
     const hasMarketData = market !== null && market.liquidityUsd > 0;
     const hasTrading = market && market.priceUsd > 0;
-    const hasHolders = holders.count > 0;
 
     let launch = {};
-    if (hasTrading && hasMarketData && hasHolders) {
+    if (hasTrading && hasMarketData) {
+      // Holder count not mandatory – agar liquidity + price hain to active trading
       launch = { status: 'Active Trading', icon: '🟢', details: 'Token is actively trading with liquidity.' };
     } else if (hasMarketData && !hasTrading) {
       launch = { status: 'Liquidity Added (Pre-Launch)', icon: '🟡', details: 'Liquidity exists but no trading activity yet.' };
