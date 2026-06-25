@@ -105,6 +105,31 @@ const formatCurrency = (value) => {
   return `$${num.toFixed(2)}`;
 };
 
+// --- Chain Auto-Detect ---
+const SUPPORTED_CHAINS = ['ethereum', 'bsc', 'polygon', 'arbitrum', 'optimism', 'avalanche'];
+
+async function detectChain(address) {
+  const clean = address.trim();
+  // Solana detect
+  if (isSolanaAddress(clean)) return 'solana';
+
+  for (const chain of SUPPORTED_CHAINS) {
+    try {
+      const cId = getGoPlusChainId(chain);
+      const url = `https://api.gopluslabs.io/api/v1/token_security/${cId}?contract_addresses=${clean}`;
+      const res = await fetchWithTimeout(url, {}, 3000);
+      const data = await safeJson(res);
+      const result = data?.result?.[clean.toLowerCase()];
+      if (result && result.token_name) {
+        return chain;
+      }
+    } catch {
+      continue;
+    }
+  }
+  return 'bsc'; // default fallback
+}
+
 // --- Handler ---
 export default async function handler(req, res) {
   const allowedOrigins = [
@@ -124,12 +149,17 @@ export default async function handler(req, res) {
   }
 
   try {
-    const { address, chain = 'bsc' } = req.query;
+    let { address, chain = 'auto' } = req.query;
     if (!address) {
       return res.status(400).json({ success: false, error: 'Token address required' });
     }
 
-    const isSolana = isSolanaAddress(address) || chain === 'solana';
+    // Auto-detect chain if needed
+    if (chain === 'auto' || chain === '') {
+      chain = await detectChain(address);
+    }
+
+    const isSolana = chain === 'solana' || isSolanaAddress(address);
     const cleanAddress = address.trim();
     const lowerAddress = cleanAddress.toLowerCase();
 
@@ -349,7 +379,7 @@ export default async function handler(req, res) {
       fdv = totalSupplyNum * finalPrice;
     }
 
-    // --- Market Cap (with human-number parsing) ---
+    // --- Market Cap ---
     let marketCap = 'N/A';
     let circulatingSupply = geckoData?.circulatingSupply || 'N/A';
     let circulatingNum = parseHumanNumber(circulatingSupply);
@@ -469,7 +499,7 @@ export default async function handler(req, res) {
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- Supply Distribution (N/A for missing) ---
+    // --- Supply Distribution ---
     const supplyDist = {
       team: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       community: 'N/A',
@@ -477,7 +507,7 @@ export default async function handler(req, res) {
       liquidity: 'N/A',
     };
 
-    // --- Wallet Concentration (N/A for missing) ---
+    // --- Wallet Concentration ---
     const concentration = {
       top1: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       top5: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
@@ -599,6 +629,10 @@ export default async function handler(req, res) {
       cons.push(`❌ Developer owns ${creatorPercent.toFixed(1)}%`);
     }
 
+    // --- Exchange Listings (only if real data exists) ---
+    const exchangeIcons = (geckoData?.exchanges && geckoData.exchanges.length > 0) ? geckoData.exchanges : [];
+    const listingStatus = (exchangeIcons.length > 0 || isEstablished) ? 'Already Listed' : 'N/A';
+
     // --- Build final response ---
     const response = {
       success: true,
@@ -664,8 +698,8 @@ export default async function handler(req, res) {
       hiddenGemScore: 'N/A',
       moonPotential: 'N/A',
       communityScore,
-      listingStatus: 'Already Listed',
-      exchangeIcons: ['Binance', 'OKX', 'Bybit', 'KuCoin'],
+      listingStatus,
+      exchangeIcons: exchangeIcons.slice(0, 4), // max 4 icons
       rank: geckoData?.rank || 'N/A',
       ath: {
         price: geckoData?.ath || 'N/A',
