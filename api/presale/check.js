@@ -146,7 +146,7 @@ export default async function handler(req, res) {
     const cleanAddress = address.trim();
     const lowerAddress = cleanAddress.toLowerCase();
 
-    // --- 1. Fetch DexScreener first (always) ---
+    // --- 1. Fetch DexScreener ---
     let dexData = null;
     try {
       const dexRes = await fetchWithTimeout(
@@ -159,44 +159,117 @@ export default async function handler(req, res) {
       // ignore
     }
 
-    // --- 2. Determine best pair and chain ---
-    let bestPair = null;
-    if (dexData?.pairs?.length) {
-      const validPairs = dexData.pairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 1000);
-      if (validPairs.length > 0) {
-        bestPair = validPairs.sort(
-          (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
-        )[0];
+    // --- 2. Collect all pairs and unique chains ---
+    let allPairs = dexData?.pairs || [];
+    // Filter pairs with reasonable liquidity
+    const validPairs = allPairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 100);
+    const chainSet = new Set();
+    validPairs.forEach(p => {
+      if (p.chainId) chainSet.add(p.chainId);
+    });
+    const dexChains = Array.from(chainSet);
+
+    // If no chains from DexScreener, fallback to user's chain or bsc
+    if (dexChains.length === 0) {
+      if (chain === 'auto') {
+        if (isSolanaAddress(cleanAddress)) {
+          chain = 'solana';
+        } else {
+          chain = 'bsc';
+        }
+      }
+      // else keep user's chain
+    } else {
+      // Map Dex chain IDs to our chain names
+      const chainNames = dexChains.map(c => mapDexChain(c));
+      // If user selected a specific chain, use it (if it's in the list, else use the best)
+      if (chain !== 'auto' && chainNames.includes(chain)) {
+        // keep user's chain
       } else {
-        bestPair = dexData.pairs.sort(
-          (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
-        )[0];
+        // Auto-detect: score each chain
+        // For each chain, fetch GoPlus to get token info and holders
+        const chainScores = [];
+        const uniqueChains = [...new Set(chainNames)];
+        // Parallel fetch GoPlus for each chain
+        const goplusPromises = uniqueChains.map(async (ch) => {
+          const cId = getGoPlusChainId(ch);
+          try {
+            const gRes = await fetchWithTimeout(
+              `https://api.gopluslabs.io/api/v1/token_security/${cId}?contract_addresses=${cleanAddress}`,
+              {},
+              5000
+            );
+            const data = await safeJson(gRes);
+            const result = data?.result?.[lowerAddress] || null;
+            return { chain: ch, data: result };
+          } catch {
+            return { chain: ch, data: null };
+          }
+        });
+        const goplusResults = await Promise.all(goplusPromises);
+
+        // Calculate liquidity per chain
+        const chainLiquidity = {};
+        validPairs.forEach(p => {
+          const ch = mapDexChain(p.chainId);
+          const liq = parseFloat(p.liquidity?.usd || 0);
+          if (!chainLiquidity[ch]) chainLiquidity[ch] = 0;
+          chainLiquidity[ch] += liq;
+        });
+
+        // Score each chain
+        let maxScore = -1;
+        let bestChain = 'bsc';
+        goplusResults.forEach(({ chain: ch, data }) => {
+          let score = 0;
+          if (data) {
+            if (data.token_name && data.token_name !== '') score += 20;
+            const hCount = parseInt(data.holder_count || 0);
+            if (hCount > 0) score += 30;
+            // liquidity score (normalized)
+            const liq = chainLiquidity[ch] || 0;
+            if (liq > 0) {
+              // compare with max liquidity
+              const maxLiq = Math.max(...Object.values(chainLiquidity));
+              if (maxLiq > 0) {
+                score += (liq / maxLiq) * 30;
+              }
+            }
+            // symbol match? (optional)
+          } else {
+            // if no data, give small score for liquidity only
+            const liq = chainLiquidity[ch] || 0;
+            if (liq > 0) {
+              const maxLiq = Math.max(...Object.values(chainLiquidity));
+              if (maxLiq > 0) {
+                score += (liq / maxLiq) * 10; // low score because no token info
+              }
+            }
+          }
+          if (score > maxScore) {
+            maxScore = score;
+            bestChain = ch;
+          }
+        });
+        // If all scores are 0, pick the chain with highest liquidity
+        if (maxScore <= 0) {
+          let maxLiq = 0;
+          for (const ch in chainLiquidity) {
+            if (chainLiquidity[ch] > maxLiq) {
+              maxLiq = chainLiquidity[ch];
+              bestChain = ch;
+            }
+          }
+        }
+        chain = bestChain;
       }
     }
 
-    // --- 3. Auto-detect chain from DexScreener ---
-    let detectedChain = chain;
-    if (chain === 'auto' && bestPair) {
-      const dexChainId = bestPair.chainId; // e.g., 'polygon'
-      if (dexChainId) {
-        detectedChain = mapDexChain(dexChainId);
-      }
-    }
-    // Fallback: if still auto, try GoPlus detection
-    if (detectedChain === 'auto') {
-      // simple fallback: check if it's Solana
-      if (isSolanaAddress(cleanAddress)) {
-        detectedChain = 'solana';
-      } else {
-        // default to bsc
-        detectedChain = 'bsc';
-      }
-    }
+    // --- 3. Now we have the final chain ---
+    const isSolana = chain === 'solana' || isSolanaAddress(cleanAddress);
+    const chainIdNum = getGoPlusChainId(chain);
 
-    const isSolana = detectedChain === 'solana' || isSolanaAddress(cleanAddress);
-    const chainIdNum = getGoPlusChainId(detectedChain);
-
-    // --- 4. Fetch GoPlus for the determined chain ---
+    // --- 4. Fetch GoPlus for the selected chain ---
     let goplusData = null;
     if (!isSolana) {
       try {
@@ -212,9 +285,25 @@ export default async function handler(req, res) {
     }
 
     const security = goplusData?.result?.[lowerAddress] || null;
-    const solanaMeta = null; // we can add later
+    const solanaMeta = null; // can add later
 
-    // --- 5. Build market data from DexScreener ---
+    // --- 5. Determine best pair for this chain from DexScreener ---
+    let bestPair = null;
+    if (validPairs.length > 0) {
+      // Filter pairs matching the selected chain
+      const chainPairs = validPairs.filter(p => mapDexChain(p.chainId) === chain);
+      if (chainPairs.length > 0) {
+        bestPair = chainPairs.sort(
+          (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+        )[0];
+      } else {
+        // fallback to any pair
+        bestPair = validPairs.sort(
+          (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
+        )[0];
+      }
+    }
+
     const marketFromDex = bestPair
       ? {
           dex: bestPair.dexId,
@@ -228,7 +317,7 @@ export default async function handler(req, res) {
         }
       : null;
 
-    // --- 6. CoinGecko (optional) ---
+    // --- 6. CoinGecko ---
     const tokenSymbol = security?.token_symbol || bestPair?.baseToken?.symbol || 'N/A';
     let geckoData = null;
     if (tokenSymbol !== 'N/A') {
@@ -275,7 +364,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 7. Token name/symbol: prefer DexScreener baseToken ---
+    // --- 7. Token name/symbol from security or DexScreener ---
     let tokenName = security?.token_name || bestPair?.baseToken?.name || 'N/A';
     let tokenSymbolFinal = security?.token_symbol || bestPair?.baseToken?.symbol || 'N/A';
 
@@ -290,7 +379,7 @@ export default async function handler(req, res) {
         const symbol = tokenSymbolFinal;
         const upperSymbol = symbol.toUpperCase();
         if (upperSymbol === 'USDC' || upperSymbol === 'USDT') {
-          decimals = detectedChain === 'bsc' ? 18 : 6;
+          decimals = chain === 'bsc' ? 18 : 6;
         } else if (upperSymbol === 'DAI' || upperSymbol === 'BUSD') {
           decimals = 18;
         } else if (upperSymbol === 'WBTC') {
@@ -590,7 +679,7 @@ export default async function handler(req, res) {
         name: tokenName,
         symbol: tokenSymbolFinal,
         address: cleanAddress,
-        chain: detectedChain,
+        chain: chain, // now correctly detected
         totalSupply: totalSupply,
         decimals: decimals,
         createdAt: security?.created_at || 'N/A',
@@ -629,7 +718,7 @@ export default async function handler(req, res) {
         volume24h: marketFromDex?.volume24h || 'N/A',
         marketCap: marketCap,
         fdv: fdv,
-        chain: detectedChain,
+        chain: chain,
       },
       social: geckoData?.social || { website: 'N/A', twitter: 'N/A', telegram: 'N/A', discord: 'N/A', github: 'N/A' },
       developer,
