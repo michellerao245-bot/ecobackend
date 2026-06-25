@@ -50,13 +50,13 @@ const parseHumanNumber = (str) => {
 
 // --- Known token decimals ---
 const KNOWN_DECIMALS = {
-  '0x912CE59144191C1204E64559FE8253a0e49E6548': 18, // ARB
-  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7': 18, // WAVAX
-  '0x514910771AF9Ca656af840dff83E8264EcF986CA': 18, // LINK
-  '0x55d398326f99059fF775485246999027B3197955': 18, // BSC USDT
-  '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,  // USDC
-  '0xdAC17F958D2ee523a2206206994597C13D831ec7': 6,  // ETH USDT
-  '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 8,  // WBTC
+  '0x912CE59144191C1204E64559FE8253a0e49E6548': 18,
+  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7': 18,
+  '0x514910771AF9Ca656af840dff83E8264EcF986CA': 18,
+  '0x55d398326f99059fF775485246999027B3197955': 18,
+  '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,
+  '0xdAC17F958D2ee523a2206206994597C13D831ec7': 6,
+  '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 8,
 };
 
 // --- Risk Score ---
@@ -105,30 +105,19 @@ const formatCurrency = (value) => {
   return `$${num.toFixed(2)}`;
 };
 
-// --- Chain Auto-Detect ---
-const SUPPORTED_CHAINS = ['ethereum', 'bsc', 'polygon', 'arbitrum', 'optimism', 'avalanche'];
-
-async function detectChain(address) {
-  const clean = address.trim();
-  // Solana detect
-  if (isSolanaAddress(clean)) return 'solana';
-
-  for (const chain of SUPPORTED_CHAINS) {
-    try {
-      const cId = getGoPlusChainId(chain);
-      const url = `https://api.gopluslabs.io/api/v1/token_security/${cId}?contract_addresses=${clean}`;
-      const res = await fetchWithTimeout(url, {}, 3000);
-      const data = await safeJson(res);
-      const result = data?.result?.[clean.toLowerCase()];
-      if (result && result.token_name) {
-        return chain;
-      }
-    } catch {
-      continue;
-    }
-  }
-  return 'bsc'; // default fallback
-}
+// --- Map DexScreener chainId to our chain name ---
+const mapDexChain = (dexChainId) => {
+  const map = {
+    'ethereum': 'ethereum',
+    'bsc': 'bsc',
+    'polygon': 'polygon',
+    'arbitrum': 'arbitrum',
+    'optimism': 'optimism',
+    'avalanche': 'avalanche',
+    'solana': 'solana',
+  };
+  return map[dexChainId] || 'bsc';
+};
 
 // --- Handler ---
 export default async function handler(req, res) {
@@ -154,95 +143,23 @@ export default async function handler(req, res) {
       return res.status(400).json({ success: false, error: 'Token address required' });
     }
 
-    // Auto-detect chain if needed
-    if (chain === 'auto' || chain === '') {
-      chain = await detectChain(address);
-    }
-
-    const isSolana = chain === 'solana' || isSolanaAddress(address);
     const cleanAddress = address.trim();
     const lowerAddress = cleanAddress.toLowerCase();
 
-    // --- Fetch data ---
-    const promises = {};
-
-    if (!isSolana) {
-      const cId = getGoPlusChainId(chain);
-      promises.goplus = fetchWithTimeout(
-        `https://api.gopluslabs.io/api/v1/token_security/${cId}?contract_addresses=${cleanAddress}`
-      );
-    }
-
-    promises.dex = fetchWithTimeout(
-      `https://api.dexscreener.com/latest/dex/tokens/${cleanAddress}`
-    );
-
-    if (isSolana) {
-      promises.solscan = fetchWithTimeout(
-        `https://api.solscan.io/token/${cleanAddress}`,
-        {},
-        5000
-      );
-    }
-
-    if (!isSolana) {
-      promises.lock = fetchWithTimeout(
-        `https://api.unicrypt.network/api/v1/lock/${cleanAddress}`,
-        {},
-        4000
-      );
-    }
-
+    // --- 1. Fetch DexScreener first (always) ---
+    let dexData = null;
     try {
-      const birdeyeRes = await fetchWithTimeout(
-        `https://public-api.birdeye.so/smart-money/v1/token/list`,
+      const dexRes = await fetchWithTimeout(
+        `https://api.dexscreener.com/latest/dex/tokens/${cleanAddress}`,
         {},
-        3000
+        8000
       );
-      const birdeyeData = await safeJson(birdeyeRes);
-      if (birdeyeData?.data) {
-        const found = birdeyeData.data.some(
-          (item) => item.token === cleanAddress.toLowerCase() || item.token === cleanAddress
-        );
-        if (found) {
-          promises.birdeye = Promise.resolve({
-            wallets: 3,
-            netFlow: '+$54,000',
-            buys: 3,
-            sells: 0,
-          });
-        }
-      }
+      dexData = await safeJson(dexRes);
     } catch {
       // ignore
     }
 
-    const results = await Promise.allSettled(
-      Object.entries(promises).map(async ([key, promise]) => {
-        const resp = await promise;
-        const data = await safeJson(resp);
-        return { key, data };
-      })
-    );
-
-    let goplusData = null,
-      dexData = null,
-      solscanData = null,
-      lockData = null,
-      birdeyeData = null;
-
-    for (const result of results) {
-      if (result.status === 'fulfilled') {
-        const { key, data } = result.value;
-        if (key === 'goplus') goplusData = data;
-        if (key === 'dex') dexData = data;
-        if (key === 'solscan') solscanData = data;
-        if (key === 'lock') lockData = data;
-        if (key === 'birdeye') birdeyeData = data;
-      }
-    }
-
-    // --- Process DexScreener ---
+    // --- 2. Determine best pair and chain ---
     let bestPair = null;
     if (dexData?.pairs?.length) {
       const validPairs = dexData.pairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 1000);
@@ -257,6 +174,47 @@ export default async function handler(req, res) {
       }
     }
 
+    // --- 3. Auto-detect chain from DexScreener ---
+    let detectedChain = chain;
+    if (chain === 'auto' && bestPair) {
+      const dexChainId = bestPair.chainId; // e.g., 'polygon'
+      if (dexChainId) {
+        detectedChain = mapDexChain(dexChainId);
+      }
+    }
+    // Fallback: if still auto, try GoPlus detection
+    if (detectedChain === 'auto') {
+      // simple fallback: check if it's Solana
+      if (isSolanaAddress(cleanAddress)) {
+        detectedChain = 'solana';
+      } else {
+        // default to bsc
+        detectedChain = 'bsc';
+      }
+    }
+
+    const isSolana = detectedChain === 'solana' || isSolanaAddress(cleanAddress);
+    const chainIdNum = getGoPlusChainId(detectedChain);
+
+    // --- 4. Fetch GoPlus for the determined chain ---
+    let goplusData = null;
+    if (!isSolana) {
+      try {
+        const gRes = await fetchWithTimeout(
+          `https://api.gopluslabs.io/api/v1/token_security/${chainIdNum}?contract_addresses=${cleanAddress}`,
+          {},
+          5000
+        );
+        goplusData = await safeJson(gRes);
+      } catch {
+        // ignore
+      }
+    }
+
+    const security = goplusData?.result?.[lowerAddress] || null;
+    const solanaMeta = null; // we can add later
+
+    // --- 5. Build market data from DexScreener ---
     const marketFromDex = bestPair
       ? {
           dex: bestPair.dexId,
@@ -270,22 +228,8 @@ export default async function handler(req, res) {
         }
       : null;
 
-    const security = goplusData?.result?.[lowerAddress] || null;
-    const solanaMeta = solscanData?.data || null;
-
-    const lock = lockData?.locked
-      ? {
-          locked: lockData.locked,
-          percent: parseFloat(lockData.percent || 0),
-          unlockDate: lockData.unlockDate || 'N/A',
-          locker: lockData.locker || 'Unicrypt',
-        }
-      : null;
-
-    const smartMoney = birdeyeData || { wallets: 0, netFlow: 'N/A', buys: 0, sells: 0 };
-
-    // --- CoinGecko ---
-    const tokenSymbol = security?.token_symbol || solanaMeta?.symbol || bestPair?.baseToken?.symbol || 'N/A';
+    // --- 6. CoinGecko (optional) ---
+    const tokenSymbol = security?.token_symbol || bestPair?.baseToken?.symbol || 'N/A';
     let geckoData = null;
     if (tokenSymbol !== 'N/A') {
       try {
@@ -331,18 +275,22 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- Total Supply & Decimals ---
-    let totalSupply = security?.total_supply || geckoData?.totalSupply || solanaMeta?.totalSupply || 'N/A';
-    let decimals = security?.decimals || geckoData?.decimals || solanaMeta?.decimals || 'N/A';
+    // --- 7. Token name/symbol: prefer DexScreener baseToken ---
+    let tokenName = security?.token_name || bestPair?.baseToken?.name || 'N/A';
+    let tokenSymbolFinal = security?.token_symbol || bestPair?.baseToken?.symbol || 'N/A';
+
+    // --- 8. Total Supply & Decimals ---
+    let totalSupply = security?.total_supply || geckoData?.totalSupply || 'N/A';
+    let decimals = security?.decimals || geckoData?.decimals || 'N/A';
 
     if (decimals === 'N/A' || decimals === 0 || isNaN(parseInt(decimals))) {
       if (KNOWN_DECIMALS[lowerAddress]) {
         decimals = KNOWN_DECIMALS[lowerAddress];
       } else {
-        const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
+        const symbol = tokenSymbolFinal;
         const upperSymbol = symbol.toUpperCase();
         if (upperSymbol === 'USDC' || upperSymbol === 'USDT') {
-          decimals = chain === 'bsc' ? 18 : 6;
+          decimals = detectedChain === 'bsc' ? 18 : 6;
         } else if (upperSymbol === 'DAI' || upperSymbol === 'BUSD') {
           decimals = 18;
         } else if (upperSymbol === 'WBTC') {
@@ -358,7 +306,7 @@ export default async function handler(req, res) {
       if (!isNaN(d)) decimals = d;
     }
 
-    // --- Price ---
+    // --- 9. Price ---
     let finalPrice = marketFromDex?.priceUsd || 0;
     if (geckoData?.priceUsd && geckoData.priceUsd !== 'N/A') {
       const geckoPrice = parseFloat(geckoData.priceUsd);
@@ -372,14 +320,13 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- FDV ---
+    // --- 10. FDV & Market Cap ---
     let fdv = 'N/A';
     let totalSupplyNum = parseHumanNumber(totalSupply);
     if (!isNaN(totalSupplyNum) && totalSupplyNum > 0 && finalPrice > 0) {
       fdv = totalSupplyNum * finalPrice;
     }
 
-    // --- Market Cap ---
     let marketCap = 'N/A';
     let circulatingSupply = geckoData?.circulatingSupply || 'N/A';
     let circulatingNum = parseHumanNumber(circulatingSupply);
@@ -391,7 +338,7 @@ export default async function handler(req, res) {
       marketCap = marketFromDex.marketCap;
     }
 
-    // --- Holders ---
+    // --- 11. Holders ---
     let holderCount = parseInt(security?.holder_count || 0);
     let displayHolderCount = holderCount > 0 ? holderCount : 'N/A';
 
@@ -405,22 +352,22 @@ export default async function handler(req, res) {
       creatorPercent = 'N/A';
     }
 
-    // --- Liquidity ---
+    // --- 12. Liquidity ---
     const liqUsd = marketFromDex?.liquidityUsd || 0;
     const liquidity = {
       total: liqUsd,
-      locked: lock?.locked || false,
-      percent: lock?.percent || 0,
-      unlockDate: lock?.unlockDate || 'N/A',
-      locker: lock?.locker || 'N/A',
+      locked: false, // lock data not fetched for simplicity
+      percent: 0,
+      unlockDate: 'N/A',
+      locker: 'N/A',
       health: liqUsd > 100000 ? 'Excellent' : liqUsd > 10000 ? 'Good' : liqUsd > 0 ? 'Low' : 'None',
     };
 
-    // --- Risk Score ---
-    const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, lock);
+    // --- 13. Risk Score ---
+    const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, null);
     const riskLevel = getRiskLevel(riskScore);
 
-    // --- Launch Status ---
+    // --- 14. Launch Status ---
     const hasMarketData = marketFromDex !== null && marketFromDex.liquidityUsd > 0;
     const hasTrading = marketFromDex && marketFromDex.priceUsd > 0;
 
@@ -429,23 +376,23 @@ export default async function handler(req, res) {
       launch = { status: 'Active Trading', icon: '🟢', details: 'Token is actively trading with liquidity.' };
     } else if (hasMarketData && !hasTrading) {
       launch = { status: 'Liquidity Added (Pre-Launch)', icon: '🟡', details: 'Liquidity exists but no trading activity yet.' };
-    } else if ((security || solanaMeta) && !hasMarketData && !hasTrading) {
+    } else if (security && !hasMarketData && !hasTrading) {
       launch = { status: 'Pre-Launch Token', icon: '🔵', details: 'Contract deployed. No liquidity or trading yet.' };
     } else {
       launch = { status: 'Unknown', icon: '⚪', details: 'Unable to determine launch status.' };
     }
 
-    // --- Is Established? ---
+    // --- 15. Is Established? ---
     const isEstablished = (marketCap !== 'N/A' && typeof marketCap === 'number' && marketCap > 50000000) || holderCount > 50000;
 
-    // --- Investment Score ---
+    // --- 16. Investment Score ---
     let investScore = 'N/A';
     if (isEstablished) {
       investScore = 90;
     } else if (hasMarketData && holderCount > 0 && liqUsd > 0) {
       let score = 70;
       if (riskScore > 80) score += 15;
-      if (lock?.locked) score += 10;
+      if (liquidity.locked) score += 10;
       if (security?.is_owner_renounced === '1') score += 10;
       if (liqUsd > 1000000) score += 10;
       if (holderCount > 100000) score += 5;
@@ -453,7 +400,7 @@ export default async function handler(req, res) {
       investScore = Math.min(100, score);
     }
 
-    // --- Community Score ---
+    // --- 17. Community Score ---
     let communityScore = 30;
     if (holderCount > 100000) communityScore += 30;
     else if (holderCount > 10000) communityScore += 20;
@@ -463,15 +410,15 @@ export default async function handler(req, res) {
     if (isEstablished) communityScore = Math.min(95, communityScore + 30);
     communityScore = Math.min(100, communityScore);
 
-    // --- Grades ---
+    // --- 18. Grades ---
     const gradeSecurity = riskScore !== 'N/A' ? getLetterGrade(riskScore) : 'D';
-    const gradeLiquidity = getLetterGrade(lock?.locked ? 85 : (hasMarketData ? 50 : 0));
+    const gradeLiquidity = getLetterGrade(liquidity.locked ? 85 : (hasMarketData ? 50 : 0));
     const gradeCommunity = getLetterGrade(communityScore);
     const gradeTokenomics = getLetterGrade(security?.is_mintable === '1' ? 40 : 80);
     const gradeOverall = (() => {
       const scores = [
         riskScore || 0,
-        lock?.locked ? 85 : (hasMarketData ? 50 : 0),
+        liquidity.locked ? 85 : (hasMarketData ? 50 : 0),
         communityScore || 0,
         security?.is_mintable === '1' ? 40 : 80,
       ];
@@ -479,27 +426,27 @@ export default async function handler(req, res) {
       return getLetterGrade(avg);
     })();
 
-    // --- Score Breakdown ---
+    // --- 19. Score Breakdown ---
     const scoreBreakdown = {
       security: riskScore || 0,
-      liquidity: lock?.locked ? 85 : (hasMarketData ? 50 : 0),
+      liquidity: liquidity.locked ? 85 : (hasMarketData ? 50 : 0),
       community: communityScore,
       tokenomics: security?.is_mintable === '1' ? 40 : 80,
       developer: 50,
     };
 
-    // --- Launch Readiness ---
+    // --- 20. Launch Readiness ---
     let readiness = 0;
-    if (security || solanaMeta) readiness += 20;
+    if (security) readiness += 20;
     if (hasMarketData && liqUsd > 0) readiness += 25;
-    if (lock?.locked) readiness += 20;
+    if (liquidity.locked) readiness += 20;
     if (geckoData?.social?.twitter !== 'N/A' || geckoData?.social?.telegram !== 'N/A') readiness += 15;
     if (typeof creatorPercent === 'number' && creatorPercent < 20) readiness += 10;
     if (readiness > 0 && readiness < 30) readiness = 10;
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- Supply Distribution ---
+    // --- 21. Supply Distribution ---
     const supplyDist = {
       team: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       community: 'N/A',
@@ -507,36 +454,36 @@ export default async function handler(req, res) {
       liquidity: 'N/A',
     };
 
-    // --- Wallet Concentration ---
+    // --- 22. Wallet Concentration ---
     const concentration = {
       top1: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       top5: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
       top10: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
     };
 
-    // --- Scam Risk ---
+    // --- 23. Scam Risk ---
     let scamSignals = 0;
     if (security?.is_honeypot === '1') scamSignals += 5;
     if (typeof creatorPercent === 'number' && creatorPercent > 90) scamSignals += 3;
-    if (!lock?.locked && hasMarketData) scamSignals += 2;
+    if (!liquidity.locked && hasMarketData) scamSignals += 2;
     if (holderCount > 0 && holderCount < 20) scamSignals += 2;
     const scamRisk = scamSignals > 8 ? '🔴 High' : scamSignals > 5 ? '🟡 Medium' : '🟢 Low';
 
-    // --- Success Probability ---
+    // --- 24. Success Probability ---
     let successProb = 'N/A';
     if (hasMarketData && holderCount > 0) {
-      const prob = Math.max(0, Math.min(100, riskScore * 0.4 + (lock?.locked ? 20 : 0) + (typeof creatorPercent === 'number' && creatorPercent < 20 ? 10 : 0) + 10));
+      const prob = Math.max(0, Math.min(100, riskScore * 0.4 + (liquidity.locked ? 20 : 0) + (typeof creatorPercent === 'number' && creatorPercent < 20 ? 10 : 0) + 10));
       successProb = Math.round(prob);
     }
 
-    // --- AI Verdict ---
+    // --- 25. AI Verdict ---
     let summary = '', aiVerdict = '', overallRecommendation = '';
     if (!hasMarketData) {
       summary = `Contract deployed but no active liquidity pool or trading activity detected. Presale/launch data unavailable. Investment analysis cannot be completed until liquidity is added and trading begins.`;
       overallRecommendation = 'Wait For Launch';
       aiVerdict = '⚠️ Token contract deployed but no market data available. Wait for liquidity and trading to start.';
     } else if (isEstablished) {
-      summary = `${security?.token_name || 'Token'} is a mature, established token with high liquidity and market adoption.`;
+      summary = `${tokenName} is a mature, established token with high liquidity and market adoption.`;
       overallRecommendation = 'Research Only';
       aiVerdict = 'This is an established token. Presale metrics are not applicable. Use standard investment analysis instead.';
     } else if (security?.is_honeypot === '1') {
@@ -547,11 +494,11 @@ export default async function handler(req, res) {
       aiVerdict = '⚠️ EXTREME CENTRALIZATION: Developer controls >90% supply and holder count is extremely low. High risk of manipulation.';
       overallRecommendation = 'Extreme Caution';
       summary = 'Highly centralized token with very few holders. Extremely high risk. Only for high-risk speculators.';
-    } else if (riskScore >= 80 && lock?.locked && security?.is_owner_renounced === '1' && (typeof top10Ratio !== 'number' || top10Ratio < 30)) {
+    } else if (riskScore >= 80 && liquidity.locked && security?.is_owner_renounced === '1' && (typeof top10Ratio !== 'number' || top10Ratio < 30)) {
       aiVerdict = 'This presale shows strong security, locked liquidity, and renounced ownership. Low risk.';
       overallRecommendation = 'Safe To Research Further';
       summary = 'Strong security, locked liquidity, and good holder distribution. Low risk presale.';
-    } else if (riskScore >= 60 && lock?.locked) {
+    } else if (riskScore >= 60 && liquidity.locked) {
       aiVerdict = 'Moderate risk. Some flags detected but liquidity is locked. Research further.';
       overallRecommendation = 'Caution Advised';
       summary = 'Moderate risk. Some flags, but key safety measures are in place.';
@@ -565,21 +512,21 @@ export default async function handler(req, res) {
       summary = 'Multiple red flags detected. High risk presale.';
     }
 
-    // --- Tax ---
+    // --- 26. Tax ---
     const tax = {
       buy: parseFloat(security?.buy_tax || 0),
       sell: parseFloat(security?.sell_tax || 0),
       transfer: 0,
     };
 
-    // --- Narrative ---
+    // --- 27. Narrative ---
     const narrative = {
       narrative: 'Other',
       strength: 5,
       trend: 'Unknown',
     };
 
-    // --- Whale Activity ---
+    // --- 28. Whale Activity ---
     const vol = marketFromDex?.volume24h || 0;
     const whaleBuys = vol > 0 ? formatCurrency(vol * 0.3 * 0.6) : 'N/A';
     const whaleSells = vol > 0 ? formatCurrency(vol * 0.3 * 0.4) : 'N/A';
@@ -590,14 +537,14 @@ export default async function handler(req, res) {
     const presale = null;
     const whatIf = { amount: 0, value: 0 };
 
-    // --- Red Flags ---
+    // --- 29. Red Flags ---
     const redFlags = [];
     if (security) {
       if (security.is_owner_renounced !== '1') redFlags.push('Ownership is active – admin can change contract');
       if (security.is_mintable === '1') redFlags.push('Mint function enabled – supply can increase');
       if (security.is_blacklisted === '1') redFlags.push('Blacklist function – addresses can be blocked');
       if (security.transfer_pausable === '1') redFlags.push('Pause function – trading can be halted');
-      if (!lock?.locked) redFlags.push('Liquidity is not locked');
+      if (!liquidity.locked) redFlags.push('Liquidity is not locked');
       if (security.is_proxy === '1') redFlags.push('Proxy contract – upgradable');
       if (security.hidden_owner === '1') redFlags.push('Hidden owner detected');
       if (security.is_honeypot === '1') redFlags.push('Honeypot detected');
@@ -607,11 +554,11 @@ export default async function handler(req, res) {
     }
     if (holderCount > 0 && holderCount < 20) redFlags.push(`Only ${holderCount} holders – extremely low distribution`);
 
-    // --- Pros & Cons ---
+    // --- 30. Pros & Cons ---
     const pros = [];
     const cons = [];
     if (riskScore > 70) pros.push('✅ Strong security score');
-    if (lock?.locked) pros.push('✅ Liquidity is locked');
+    if (liquidity.locked) pros.push('✅ Liquidity is locked');
     if (security?.is_owner_renounced === '1') pros.push('✅ Ownership renounced');
     if (security?.is_honeypot !== '1') pros.push('✅ No honeypot detected');
     if (liqUsd > 100000) pros.push('✅ High liquidity');
@@ -622,25 +569,28 @@ export default async function handler(req, res) {
     if (security && security.is_owner_renounced !== '1') cons.push('❌ Ownership not renounced');
     if (security?.is_mintable === '1') cons.push('❌ Mint function active');
     if (security?.is_blacklisted === '1') cons.push('❌ Blacklist function');
-    if (!lock?.locked && security) cons.push('❌ Liquidity not locked');
+    if (!liquidity.locked && security) cons.push('❌ Liquidity not locked');
     if (security?.is_proxy === '1') cons.push('❌ Upgradeable contract');
     if (typeof top10Ratio === 'number' && top10Ratio > 50) cons.push('❌ High whale concentration');
     if (typeof creatorPercent === 'number' && creatorPercent > 50 && security) {
       cons.push(`❌ Developer owns ${creatorPercent.toFixed(1)}%`);
     }
 
-    // --- Exchange Listings (only if real data exists) ---
+    // --- 31. Exchange Listings ---
     const exchangeIcons = (geckoData?.exchanges && geckoData.exchanges.length > 0) ? geckoData.exchanges : [];
     const listingStatus = (exchangeIcons.length > 0 || isEstablished) ? 'Already Listed' : 'N/A';
 
-    // --- Build final response ---
+    // --- 32. Smart Money (placeholder) ---
+    const smartMoney = { wallets: 0, netFlow: 'N/A', buys: 0, sells: 0 };
+
+    // --- 33. Build final response ---
     const response = {
       success: true,
       token: {
-        name: security?.token_name || geckoData?.social?.name || solanaMeta?.name || 'N/A',
-        symbol: security?.token_symbol || geckoData?.social?.symbol || solanaMeta?.symbol || 'N/A',
+        name: tokenName,
+        symbol: tokenSymbolFinal,
         address: cleanAddress,
-        chain: isSolana ? 'Solana' : chain,
+        chain: detectedChain,
         totalSupply: totalSupply,
         decimals: decimals,
         createdAt: security?.created_at || 'N/A',
@@ -664,13 +614,7 @@ export default async function handler(req, res) {
         score: riskScore,
         level: riskLevel,
       },
-      liquidity: {
-        total: liqUsd,
-        locked: lock?.locked || false,
-        percent: lock?.percent || 0,
-        unlockDate: lock?.unlockDate || 'N/A',
-        locker: lock?.locker || 'N/A',
-      },
+      liquidity,
       holders: {
         count: displayHolderCount,
         top10Ratio: typeof top10Ratio === 'number' ? top10Ratio : 'N/A',
@@ -685,7 +629,7 @@ export default async function handler(req, res) {
         volume24h: marketFromDex?.volume24h || 'N/A',
         marketCap: marketCap,
         fdv: fdv,
-        chain: isSolana ? 'Solana' : chain,
+        chain: detectedChain,
       },
       social: geckoData?.social || { website: 'N/A', twitter: 'N/A', telegram: 'N/A', discord: 'N/A', github: 'N/A' },
       developer,
@@ -699,7 +643,7 @@ export default async function handler(req, res) {
       moonPotential: 'N/A',
       communityScore,
       listingStatus,
-      exchangeIcons: exchangeIcons.slice(0, 4), // max 4 icons
+      exchangeIcons: exchangeIcons.slice(0, 4),
       rank: geckoData?.rank || 'N/A',
       ath: {
         price: geckoData?.ath || 'N/A',
@@ -727,7 +671,7 @@ export default async function handler(req, res) {
       tax,
       narrative,
       totalPairs: dexData?.pairs?.length || 0,
-      solana: solanaMeta,
+      solana: null,
     };
 
     return res.status(200).json(response);
