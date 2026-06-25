@@ -34,17 +34,32 @@ const getGoPlusChainId = (chain) => {
   return map[chain] || 56;
 };
 
-// --- Known token decimals (address -> decimals) ---
-const KNOWN_DECIMALS = {
-  '0x912CE59144191C1204E64559FE8253a0e49E6548': 18, // ARB (Arbitrum)
-  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7': 18, // WAVAX (Avalanche)
-  '0x514910771AF9Ca656af840dff83E8264EcF986CA': 18, // LINK (Ethereum)
-  '0x55d398326f99059fF775485246999027B3197955': 18, // USDT (BSC)
-  '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,  // USDC (Ethereum)
-  '0xdAC17F958D2ee523a2206206994597C13D831ec7': 6,  // USDT (Ethereum)
+// --- Parse human-readable numbers ---
+const parseHumanNumber = (str) => {
+  if (!str || typeof str !== 'string') return NaN;
+  const cleaned = str.replace(/,/g, '').trim();
+  const match = cleaned.match(/^([\d.]+)\s*([KMB])?$/i);
+  if (!match) return parseFloat(cleaned);
+  let num = parseFloat(match[1]);
+  const suffix = match[2]?.toUpperCase();
+  if (suffix === 'K') num *= 1e3;
+  else if (suffix === 'M') num *= 1e6;
+  else if (suffix === 'B') num *= 1e9;
+  return num;
 };
 
-// --- Risk Score Engine ---
+// --- Known token decimals ---
+const KNOWN_DECIMALS = {
+  '0x912CE59144191C1204E64559FE8253a0e49E6548': 18, // ARB
+  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7': 18, // WAVAX
+  '0x514910771AF9Ca656af840dff83E8264EcF986CA': 18, // LINK
+  '0x55d398326f99059fF775485246999027B3197955': 18, // BSC USDT
+  '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,  // USDC
+  '0xdAC17F958D2ee523a2206206994597C13D831ec7': 6,  // ETH USDT
+  '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 8,  // WBTC
+};
+
+// --- Risk Score ---
 const calculateRiskScore = (security, market, holders, lock) => {
   let score = 100;
   if (security?.is_honeypot === '1') score -= 50;
@@ -72,7 +87,6 @@ const getRiskLevel = (score) => {
   return 'High Risk';
 };
 
-// --- Helper: get letter grade ---
 const getLetterGrade = (score) => {
   if (score >= 90) return 'A+';
   if (score >= 80) return 'A';
@@ -81,7 +95,6 @@ const getLetterGrade = (score) => {
   return 'D';
 };
 
-// --- Helper: format currency ---
 const formatCurrency = (value) => {
   if (!value || value === 'N/A') return 'N/A';
   const num = parseFloat(value);
@@ -292,12 +305,10 @@ export default async function handler(req, res) {
     let totalSupply = security?.total_supply || geckoData?.totalSupply || solanaMeta?.totalSupply || 'N/A';
     let decimals = security?.decimals || geckoData?.decimals || solanaMeta?.decimals || 'N/A';
 
-    // Known decimals fallback
     if (decimals === 'N/A' || decimals === 0 || isNaN(parseInt(decimals))) {
       if (KNOWN_DECIMALS[lowerAddress]) {
         decimals = KNOWN_DECIMALS[lowerAddress];
       } else {
-        // Symbol-based fallback
         const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
         const upperSymbol = symbol.toUpperCase();
         if (upperSymbol === 'USDC' || upperSymbol === 'USDT') {
@@ -309,7 +320,6 @@ export default async function handler(req, res) {
         } else if (upperSymbol === 'WETH' || upperSymbol === 'WBNB' || upperSymbol === 'WAVAX') {
           decimals = 18;
         } else {
-          // Default fallback: 18 for most ERC-20 tokens
           decimals = 18;
         }
       }
@@ -332,21 +342,20 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- FDV (Total Supply × Price) ---
+    // --- FDV ---
     let fdv = 'N/A';
-    let totalSupplyNum = parseFloat(totalSupply);
+    let totalSupplyNum = parseHumanNumber(totalSupply);
     if (!isNaN(totalSupplyNum) && totalSupplyNum > 0 && finalPrice > 0) {
       fdv = totalSupplyNum * finalPrice;
     }
 
-    // --- Market Cap (Circulating Supply × Price) ---
+    // --- Market Cap (with human-number parsing) ---
     let marketCap = 'N/A';
     let circulatingSupply = geckoData?.circulatingSupply || 'N/A';
-    let circulatingNum = parseFloat(circulatingSupply);
+    let circulatingNum = parseHumanNumber(circulatingSupply);
     if (!isNaN(circulatingNum) && circulatingNum > 0 && finalPrice > 0) {
       marketCap = circulatingNum * finalPrice;
     } else if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
-      // Fallback: agar circulating nahi mila to FDV use karo
       marketCap = fdv;
     } else if (marketFromDex?.marketCap && marketFromDex.marketCap > 0) {
       marketCap = marketFromDex.marketCap;
@@ -361,7 +370,6 @@ export default async function handler(req, res) {
     let creatorAddress = security?.creator_address || 'N/A';
     let creatorBalance = security?.creator_balance || 'N/A';
 
-    // Agar holder count missing hai to sab N/A
     if (holderCount === 0) {
       top10Ratio = 'N/A';
       creatorPercent = 'N/A';
@@ -461,7 +469,7 @@ export default async function handler(req, res) {
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- Supply Distribution (N/A instead of 0) ---
+    // --- Supply Distribution (N/A for missing) ---
     const supplyDist = {
       team: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       community: 'N/A',
@@ -469,7 +477,7 @@ export default async function handler(req, res) {
       liquidity: 'N/A',
     };
 
-    // --- Wallet Concentration (N/A instead of 0) ---
+    // --- Wallet Concentration (N/A for missing) ---
     const concentration = {
       top1: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
       top5: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
