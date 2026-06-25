@@ -1,42 +1,4 @@
 import { getChainId } from '../../utils/chains.js';
-import {
-  Shield,
-  Lock,
-  Unlock,
-  AlertTriangle,
-  Search,
-  Coins,
-  CheckCircle,
-  XCircle,
-  Clock,
-  Zap,
-  Users,
-  FileCheck,
-  FileX,
-  ExternalLink,
-  TrendingUp,
-  Flame,
-  Globe,
-  Twitter,
-  Send,
-  MessageCircle,
-  Github,
-  Percent,
-  Wallet,
-  List,
-  BarChart3,
-  History,
-  User,
-  TrendingDown,
-  ArrowUp,
-  ArrowDown,
-  Eye,
-  EyeOff,
-  Activity,
-  LineChart,
-  Gauge,
-  PieChart,   // 👈 YEH ADD KARO
-} from "lucide-react";
 
 // --- Optional Upstash Redis (if available) ---
 let redis = null;
@@ -349,16 +311,18 @@ const checkRateLimit = async (ip) => {
 
 // --- MAIN HANDLER ---
 export default async function handler(req, res) {
-  const allowedOrigins = [
-    'https://smarttools-one.vercel.app',
-    'http://localhost:5173',
-    'http://localhost:3000',
-  ];
-  const origin = req.headers.origin;
-  if (allowedOrigins.includes(origin)) res.setHeader('Access-Control-Allow-Origin', origin);
+  // ==============================================
+  // 🔧 FIXED CORS – ALLOW ALL ORIGINS
+  // ==============================================
+  res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
+
+  // Handle preflight (OPTIONS) request
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  // ==============================================
 
   try {
     // Rate limiting
