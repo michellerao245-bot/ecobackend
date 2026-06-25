@@ -34,6 +34,16 @@ const getGoPlusChainId = (chain) => {
   return map[chain] || 56;
 };
 
+// --- Known token decimals (address -> decimals) ---
+const KNOWN_DECIMALS = {
+  '0x912CE59144191C1204E64559FE8253a0e49E6548': 18, // ARB (Arbitrum)
+  '0xB31f66AA3C1e785363F0875A1B74E27b85FD66c7': 18, // WAVAX (Avalanche)
+  '0x514910771AF9Ca656af840dff83E8264EcF986CA': 18, // LINK (Ethereum)
+  '0x55d398326f99059fF775485246999027B3197955': 18, // USDT (BSC)
+  '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': 6,  // USDC (Ethereum)
+  '0xdAC17F958D2ee523a2206206994597C13D831ec7': 6,  // USDT (Ethereum)
+};
+
 // --- Risk Score Engine ---
 const calculateRiskScore = (security, market, holders, lock) => {
   let score = 100;
@@ -71,7 +81,7 @@ const getLetterGrade = (score) => {
   return 'D';
 };
 
-// --- Helper: format currency (for display) ---
+// --- Helper: format currency ---
 const formatCurrency = (value) => {
   if (!value || value === 'N/A') return 'N/A';
   const num = parseFloat(value);
@@ -108,7 +118,9 @@ export default async function handler(req, res) {
 
     const isSolana = isSolanaAddress(address) || chain === 'solana';
     const cleanAddress = address.trim();
+    const lowerAddress = cleanAddress.toLowerCase();
 
+    // --- Fetch data ---
     const promises = {};
 
     if (!isSolana) {
@@ -215,7 +227,7 @@ export default async function handler(req, res) {
         }
       : null;
 
-    const security = goplusData?.result?.[cleanAddress.toLowerCase()] || null;
+    const security = goplusData?.result?.[lowerAddress] || null;
     const solanaMeta = solscanData?.data || null;
 
     const lock = lockData?.locked
@@ -279,18 +291,29 @@ export default async function handler(req, res) {
     // --- Total Supply & Decimals ---
     let totalSupply = security?.total_supply || geckoData?.totalSupply || solanaMeta?.totalSupply || 'N/A';
     let decimals = security?.decimals || geckoData?.decimals || solanaMeta?.decimals || 'N/A';
-    if (decimals === 'N/A' || decimals === 0) {
-      const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
-      const upperSymbol = symbol.toUpperCase();
-      if ((upperSymbol === 'USDT' || upperSymbol === 'USDC' || upperSymbol === 'BUSD' || upperSymbol === 'DAI') && chain === 'bsc') {
-        decimals = 18;
-      } else if (upperSymbol === 'USDT' && chain === 'ethereum') {
-        decimals = 6;
-      } else if (upperSymbol === 'USDC' && chain === 'ethereum') {
-        decimals = 6;
+
+    // Known decimals fallback
+    if (decimals === 'N/A' || decimals === 0 || isNaN(parseInt(decimals))) {
+      if (KNOWN_DECIMALS[lowerAddress]) {
+        decimals = KNOWN_DECIMALS[lowerAddress];
+      } else {
+        // Symbol-based fallback
+        const symbol = security?.token_symbol || bestPair?.baseToken?.symbol || '';
+        const upperSymbol = symbol.toUpperCase();
+        if (upperSymbol === 'USDC' || upperSymbol === 'USDT') {
+          decimals = chain === 'bsc' ? 18 : 6;
+        } else if (upperSymbol === 'DAI' || upperSymbol === 'BUSD') {
+          decimals = 18;
+        } else if (upperSymbol === 'WBTC') {
+          decimals = 8;
+        } else if (upperSymbol === 'WETH' || upperSymbol === 'WBNB' || upperSymbol === 'WAVAX') {
+          decimals = 18;
+        } else {
+          // Default fallback: 18 for most ERC-20 tokens
+          decimals = 18;
+        }
       }
-    }
-    if (decimals !== 'N/A') {
+    } else {
       const d = parseInt(decimals);
       if (!isNaN(d)) decimals = d;
     }
@@ -309,34 +332,24 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- FDV ---
+    // --- FDV (Total Supply × Price) ---
     let fdv = 'N/A';
-    if (totalSupply !== 'N/A' && finalPrice > 0) {
-      const supply = parseFloat(totalSupply);
-      if (!isNaN(supply) && supply > 0) {
-        fdv = supply * finalPrice;
-      }
+    let totalSupplyNum = parseFloat(totalSupply);
+    if (!isNaN(totalSupplyNum) && totalSupplyNum > 0 && finalPrice > 0) {
+      fdv = totalSupplyNum * finalPrice;
     }
 
-    // --- Market Cap ---
-    let finalMarketCap = 'N/A';
-    const dexMc = marketFromDex?.marketCap || 0;
-    const geckoMc = geckoData?.marketCap && geckoData.marketCap !== 'N/A' ? parseFloat(geckoData.marketCap) : 0;
-
-    if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
-      finalMarketCap = fdv;
-    } else if (geckoMc > 0) {
-      finalMarketCap = geckoMc;
-    } else if (dexMc > 0) {
-      if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
-        if (dexMc > fdv * 5) {
-          finalMarketCap = fdv;
-        } else {
-          finalMarketCap = dexMc;
-        }
-      } else {
-        finalMarketCap = dexMc;
-      }
+    // --- Market Cap (Circulating Supply × Price) ---
+    let marketCap = 'N/A';
+    let circulatingSupply = geckoData?.circulatingSupply || 'N/A';
+    let circulatingNum = parseFloat(circulatingSupply);
+    if (!isNaN(circulatingNum) && circulatingNum > 0 && finalPrice > 0) {
+      marketCap = circulatingNum * finalPrice;
+    } else if (fdv !== 'N/A' && typeof fdv === 'number' && fdv > 0) {
+      // Fallback: agar circulating nahi mila to FDV use karo
+      marketCap = fdv;
+    } else if (marketFromDex?.marketCap && marketFromDex.marketCap > 0) {
+      marketCap = marketFromDex.marketCap;
     }
 
     // --- Holders ---
@@ -348,6 +361,7 @@ export default async function handler(req, res) {
     let creatorAddress = security?.creator_address || 'N/A';
     let creatorBalance = security?.creator_balance || 'N/A';
 
+    // Agar holder count missing hai to sab N/A
     if (holderCount === 0) {
       top10Ratio = 'N/A';
       creatorPercent = 'N/A';
@@ -384,7 +398,7 @@ export default async function handler(req, res) {
     }
 
     // --- Is Established? ---
-    const isEstablished = (finalMarketCap !== 'N/A' && typeof finalMarketCap === 'number' && finalMarketCap > 50000000) || holderCount > 50000;
+    const isEstablished = (marketCap !== 'N/A' && typeof marketCap === 'number' && marketCap > 50000000) || holderCount > 50000;
 
     // --- Investment Score ---
     let investScore = 'N/A';
@@ -447,19 +461,19 @@ export default async function handler(req, res) {
     if (isEstablished) readiness = Math.max(readiness, 70);
     readiness = Math.min(100, readiness);
 
-    // --- Supply Distribution ---
+    // --- Supply Distribution (N/A instead of 0) ---
     const supplyDist = {
-      team: typeof creatorPercent === 'number' ? creatorPercent : 0,
-      community: Math.max(0, 100 - (typeof creatorPercent === 'number' ? creatorPercent : 0) - (typeof top10Ratio === 'number' ? top10Ratio : 0)),
-      burn: 0,
-      liquidity: 0,
+      team: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
+      community: 'N/A',
+      burn: 'N/A',
+      liquidity: 'N/A',
     };
 
-    // --- Wallet Concentration ---
+    // --- Wallet Concentration (N/A instead of 0) ---
     const concentration = {
-      top1: typeof creatorPercent === 'number' ? creatorPercent : 0,
-      top5: typeof top10Ratio === 'number' ? top10Ratio : (typeof creatorPercent === 'number' ? creatorPercent : 0),
-      top10: typeof top10Ratio === 'number' ? top10Ratio : (typeof creatorPercent === 'number' ? creatorPercent : 0),
+      top1: (typeof creatorPercent === 'number' && creatorPercent > 0) ? creatorPercent : 'N/A',
+      top5: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
+      top10: (typeof top10Ratio === 'number' && top10Ratio > 0) ? top10Ratio : 'N/A',
     };
 
     // --- Scam Risk ---
@@ -627,7 +641,7 @@ export default async function handler(req, res) {
         priceChange24h: marketFromDex?.priceChange24h || 'N/A',
         liquidity: liqUsd || 'N/A',
         volume24h: marketFromDex?.volume24h || 'N/A',
-        marketCap: finalMarketCap,
+        marketCap: marketCap,
         fdv: fdv,
         chain: isSolana ? 'Solana' : chain,
       },
