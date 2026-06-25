@@ -15,7 +15,7 @@ try {
     });
     ratelimit = new Ratelimit({
       redis,
-      limiter: Ratelimit.fixedWindow(10, '10s'), // 10 requests per 10 seconds
+      limiter: Ratelimit.fixedWindow(10, '10s'),
       analytics: true,
     });
     useRedis = true;
@@ -27,9 +27,9 @@ try {
   console.warn('[Cache] Upstash not installed – using in-memory fallback');
 }
 
-// --- Fallback in-memory cache (if Redis not available) ---
+// --- Fallback in-memory cache ---
 const memoryCache = new Map();
-const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+const CACHE_TTL = 30 * 60 * 1000;
 
 const getCached = async (key) => {
   if (useRedis) {
@@ -185,7 +185,7 @@ const fetchSolanaMetadata = async (address) => {
 
 // --- Risk Score ---
 const calculateRiskScore = (security, market, holders, lock, isEstablished, securityUnavailable) => {
-  if (securityUnavailable) return 50; // neutral score when security check unavailable
+  if (securityUnavailable) return 50;
   if (security?.is_honeypot === '1') return 0;
   let score = 100;
   if (security?.is_mintable === '1') score -= 15;
@@ -300,9 +300,9 @@ const calculateHiddenGem = (marketCap, holders, ageDays, riskScore) => {
   return Math.min(100, score);
 };
 
-// --- Rate Limiting (if Redis available) ---
+// --- Rate Limiting ---
 const checkRateLimit = async (ip) => {
-  if (!ratelimit) return { success: true }; // no rate limiter
+  if (!ratelimit) return { success: true };
   try {
     const { success } = await ratelimit.limit(ip);
     return { success };
@@ -323,7 +323,7 @@ export default async function handler(req, res) {
   if (req.method === 'OPTIONS') return res.status(200).end();
 
   try {
-    // --- Rate Limiting ---
+    // Rate limiting
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress || 'anonymous';
     const rateLimitResult = await checkRateLimit(ip);
     if (!rateLimitResult.success) {
@@ -833,8 +833,41 @@ export default async function handler(req, res) {
     };
 
     // --- LP Burn & Rug History (honest) ---
-    const lpBurn = null;
+    const lpBurn = lockData?.lockAddress && lockData.lockAddress.toLowerCase() === '0x000000000000000000000000000000000000dead' ? true : false;
     const rugHistory = null;
+
+    // --- EXTRA FIELDS FOR LP LOCK CHECKER ---
+    // 1. Dev Wallet
+    const devWallet = {
+      address: creatorAddress,
+      balance: creatorBalance,
+      percent: typeof creatorPercent === 'number' ? creatorPercent : 'N/A',
+      isActive: typeof creatorPercent === 'number' && creatorPercent > 0,
+    };
+
+    // 2. Distribution (estimate)
+    const distribution = {
+      liquidity: liquidity.locked ? liquidity.percent : 0,
+      burn: lpBurn ? 5 : 0,
+      dev: typeof creatorPercent === 'number' ? creatorPercent : 0,
+      community: Math.max(0, 100 - (liquidity.locked ? liquidity.percent : 0) - (lpBurn ? 5 : 0) - (typeof creatorPercent === 'number' ? creatorPercent : 0)),
+    };
+
+    // 3. Top Holders (only creator if available)
+    const topHolders = [];
+    if (creatorAddress && creatorAddress !== 'N/A' && creatorAddress !== '0x0000000000000000000000000000000000000000') {
+      topHolders.push({
+        address: creatorAddress,
+        percent: typeof creatorPercent === 'number' ? creatorPercent : 0,
+        isCreator: true,
+      });
+    }
+
+    // 4. Locker Trust Score
+    const lockerTrustScore = (lockData?.locker) ? (lockData.locker.toLowerCase().includes('pink') || lockData.locker.toLowerCase().includes('team') || lockData.locker.toLowerCase().includes('unicrypt') ? 'trusted' : 'untrusted') : 'unknown';
+
+    // 5. Multi-lock (placeholder)
+    const multiLock = null; // not available
 
     // --- Build response ---
     const response = {
@@ -876,12 +909,14 @@ export default async function handler(req, res) {
         creatorPercent: typeof creatorPercent === 'number' ? creatorPercent : 'N/A',
         creatorAddress,
         creatorBalance,
+        topHolders, // new
       },
       market: {
         price: finalPrice || 'N/A',
         priceChange24h: marketFromDex?.priceChange24h || 'N/A',
         liquidity: liqUsd || 'N/A',
         volume24h: marketFromDex?.volume24h || 'N/A',
+        volume7d: marketFromDex?.volume7d || 'N/A', // new
         marketCap,
         fdv,
         chain: detectedChain,
@@ -934,6 +969,11 @@ export default async function handler(req, res) {
       lpBurn,
       rugHistory,
       solana: solanaMeta,
+      // --- NEW FIELDS FOR LP CHECKER ---
+      devWallet,
+      distribution,
+      lockerTrustScore,
+      multiLock,
       _debug: {
         detectedChain,
         chainIdNum,
