@@ -59,25 +59,42 @@ const KNOWN_DECIMALS = {
   '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599': 8,
 };
 
-// --- Risk Score ---
-const calculateRiskScore = (security, market, holders, lock) => {
+// --- Risk Score (modifed for established tokens) ---
+const calculateRiskScore = (security, market, holders, lock, isEstablished) => {
   let score = 100;
+  // Honeypot is always critical
   if (security?.is_honeypot === '1') score -= 50;
+  // Mint, blacklist, pause, proxy, hidden owner – still relevant
   if (security?.is_mintable === '1') score -= 15;
   if (security?.is_blacklisted === '1') score -= 10;
   if (security?.transfer_pausable === '1') score -= 5;
   if (security?.is_proxy === '1') score -= 8;
   if (security?.hidden_owner === '1') score -= 15;
-  if (security?.is_owner_renounced !== '1') score -= 10;
+
+  // Ownership renounced – only penalize if NOT established
+  if (!isEstablished) {
+    if (security?.is_owner_renounced !== '1') score -= 10;
+  } else {
+    // For established, we treat as "Governance Controlled" – no penalty
+    // but we'll note it in warnings
+  }
+
+  // Top holder concentration – still relevant
   const top = parseFloat(security?.top_10_holder_balance_ratio || 0) * 100;
   if (top > 50) score -= 20;
   else if (top > 30) score -= 10;
-  if (!lock?.locked) score -= 10;
+
+  // Liquidity lock – only for presale tokens
+  if (!isEstablished && !lock?.locked) score -= 10;
+  // For established, we ignore LP lock
+
   const liq = parseFloat(market?.liquidityUsd || 0);
   if (liq > 0 && liq < 10000) score -= 10;
+
   const hCount = holders?.count || 0;
   if (hCount === 0) score -= 5;
   else if (hCount < 20) score -= 10;
+
   return Math.max(0, Math.min(100, score));
 };
 
@@ -119,7 +136,7 @@ const mapDexChain = (dexChainId) => {
   return map[dexChainId] || 'bsc';
 };
 
-// --- Handler ---
+// --- Main Handler ---
 export default async function handler(req, res) {
   const allowedOrigins = [
     'https://smarttools-one.vercel.app',
@@ -161,7 +178,6 @@ export default async function handler(req, res) {
 
     // --- 2. Collect all pairs and unique chains ---
     let allPairs = dexData?.pairs || [];
-    // Filter pairs with reasonable liquidity
     const validPairs = allPairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 100);
     const chainSet = new Set();
     validPairs.forEach(p => {
@@ -180,17 +196,13 @@ export default async function handler(req, res) {
       }
       // else keep user's chain
     } else {
-      // Map Dex chain IDs to our chain names
       const chainNames = dexChains.map(c => mapDexChain(c));
-      // If user selected a specific chain, use it (if it's in the list, else use the best)
       if (chain !== 'auto' && chainNames.includes(chain)) {
         // keep user's chain
       } else {
         // Auto-detect: score each chain
-        // For each chain, fetch GoPlus to get token info and holders
         const chainScores = [];
         const uniqueChains = [...new Set(chainNames)];
-        // Parallel fetch GoPlus for each chain
         const goplusPromises = uniqueChains.map(async (ch) => {
           const cId = getGoPlusChainId(ch);
           try {
@@ -208,7 +220,6 @@ export default async function handler(req, res) {
         });
         const goplusResults = await Promise.all(goplusPromises);
 
-        // Calculate liquidity per chain
         const chainLiquidity = {};
         validPairs.forEach(p => {
           const ch = mapDexChain(p.chainId);
@@ -217,7 +228,6 @@ export default async function handler(req, res) {
           chainLiquidity[ch] += liq;
         });
 
-        // Score each chain
         let maxScore = -1;
         let bestChain = 'bsc';
         goplusResults.forEach(({ chain: ch, data }) => {
@@ -226,23 +236,19 @@ export default async function handler(req, res) {
             if (data.token_name && data.token_name !== '') score += 20;
             const hCount = parseInt(data.holder_count || 0);
             if (hCount > 0) score += 30;
-            // liquidity score (normalized)
             const liq = chainLiquidity[ch] || 0;
             if (liq > 0) {
-              // compare with max liquidity
               const maxLiq = Math.max(...Object.values(chainLiquidity));
               if (maxLiq > 0) {
                 score += (liq / maxLiq) * 30;
               }
             }
-            // symbol match? (optional)
           } else {
-            // if no data, give small score for liquidity only
             const liq = chainLiquidity[ch] || 0;
             if (liq > 0) {
               const maxLiq = Math.max(...Object.values(chainLiquidity));
               if (maxLiq > 0) {
-                score += (liq / maxLiq) * 10; // low score because no token info
+                score += (liq / maxLiq) * 10;
               }
             }
           }
@@ -251,7 +257,6 @@ export default async function handler(req, res) {
             bestChain = ch;
           }
         });
-        // If all scores are 0, pick the chain with highest liquidity
         if (maxScore <= 0) {
           let maxLiq = 0;
           for (const ch in chainLiquidity) {
@@ -265,7 +270,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 3. Now we have the final chain ---
+    // --- 3. Final chain ---
     const isSolana = chain === 'solana' || isSolanaAddress(cleanAddress);
     const chainIdNum = getGoPlusChainId(chain);
 
@@ -285,19 +290,17 @@ export default async function handler(req, res) {
     }
 
     const security = goplusData?.result?.[lowerAddress] || null;
-    const solanaMeta = null; // can add later
+    const solanaMeta = null;
 
-    // --- 5. Determine best pair for this chain from DexScreener ---
+    // --- 5. Best pair for this chain ---
     let bestPair = null;
     if (validPairs.length > 0) {
-      // Filter pairs matching the selected chain
       const chainPairs = validPairs.filter(p => mapDexChain(p.chainId) === chain);
       if (chainPairs.length > 0) {
         bestPair = chainPairs.sort(
           (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
         )[0];
       } else {
-        // fallback to any pair
         bestPair = validPairs.sort(
           (a, b) => (b.liquidity?.usd || 0) - (a.liquidity?.usd || 0)
         )[0];
@@ -364,7 +367,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // --- 7. Token name/symbol from security or DexScreener ---
+    // --- 7. Token name/symbol ---
     let tokenName = security?.token_name || bestPair?.baseToken?.name || 'N/A';
     let tokenSymbolFinal = security?.token_symbol || bestPair?.baseToken?.symbol || 'N/A';
 
@@ -445,18 +448,21 @@ export default async function handler(req, res) {
     const liqUsd = marketFromDex?.liquidityUsd || 0;
     const liquidity = {
       total: liqUsd,
-      locked: false, // lock data not fetched for simplicity
+      locked: false,
       percent: 0,
       unlockDate: 'N/A',
       locker: 'N/A',
       health: liqUsd > 100000 ? 'Excellent' : liqUsd > 10000 ? 'Good' : liqUsd > 0 ? 'Low' : 'None',
     };
 
-    // --- 13. Risk Score ---
-    const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, null);
+    // --- 13. Determine if established ---
+    const isEstablished = (marketCap !== 'N/A' && typeof marketCap === 'number' && marketCap > 50000000) || holderCount > 100000;
+
+    // --- 14. Risk Score ---
+    const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, liquidity, isEstablished);
     const riskLevel = getRiskLevel(riskScore);
 
-    // --- 14. Launch Status ---
+    // --- 15. Launch Status ---
     const hasMarketData = marketFromDex !== null && marketFromDex.liquidityUsd > 0;
     const hasTrading = marketFromDex && marketFromDex.priceUsd > 0;
 
@@ -470,9 +476,6 @@ export default async function handler(req, res) {
     } else {
       launch = { status: 'Unknown', icon: '⚪', details: 'Unable to determine launch status.' };
     }
-
-    // --- 15. Is Established? ---
-    const isEstablished = (marketCap !== 'N/A' && typeof marketCap === 'number' && marketCap > 50000000) || holderCount > 50000;
 
     // --- 16. Investment Score ---
     let investScore = 'N/A';
@@ -554,7 +557,7 @@ export default async function handler(req, res) {
     let scamSignals = 0;
     if (security?.is_honeypot === '1') scamSignals += 5;
     if (typeof creatorPercent === 'number' && creatorPercent > 90) scamSignals += 3;
-    if (!liquidity.locked && hasMarketData) scamSignals += 2;
+    if (!liquidity.locked && hasMarketData && !isEstablished) scamSignals += 2;
     if (holderCount > 0 && holderCount < 20) scamSignals += 2;
     const scamRisk = scamSignals > 8 ? '🔴 High' : scamSignals > 5 ? '🟡 Medium' : '🟢 Low';
 
@@ -572,9 +575,9 @@ export default async function handler(req, res) {
       overallRecommendation = 'Wait For Launch';
       aiVerdict = '⚠️ Token contract deployed but no market data available. Wait for liquidity and trading to start.';
     } else if (isEstablished) {
-      summary = `${tokenName} is a mature, established token with high liquidity and market adoption.`;
+      summary = `${tokenName} is a mature, established token with high liquidity and market adoption. Use standard fundamental analysis for investment decisions.`;
       overallRecommendation = 'Research Only';
-      aiVerdict = 'This is an established token. Presale metrics are not applicable. Use standard investment analysis instead.';
+      aiVerdict = '✅ This is an established token. Presale metrics are not applicable. Use standard investment analysis instead.';
     } else if (security?.is_honeypot === '1') {
       aiVerdict = '🚨 HONEYPOT DETECTED – High Risk. Avoid investing.';
       overallRecommendation = 'Avoid';
@@ -629,11 +632,17 @@ export default async function handler(req, res) {
     // --- 29. Red Flags ---
     const redFlags = [];
     if (security) {
-      if (security.is_owner_renounced !== '1') redFlags.push('Ownership is active – admin can change contract');
+      if (security.is_owner_renounced !== '1') {
+        if (isEstablished) {
+          redFlags.push('⚠️ Governance/Upgrade Authority Active – contract is upgradeable or admin controlled');
+        } else {
+          redFlags.push('⚠️ Ownership is active – admin can change contract');
+        }
+      }
       if (security.is_mintable === '1') redFlags.push('Mint function enabled – supply can increase');
       if (security.is_blacklisted === '1') redFlags.push('Blacklist function – addresses can be blocked');
       if (security.transfer_pausable === '1') redFlags.push('Pause function – trading can be halted');
-      if (!liquidity.locked) redFlags.push('Liquidity is not locked');
+      if (!liquidity.locked && !isEstablished) redFlags.push('Liquidity is not locked');
       if (security.is_proxy === '1') redFlags.push('Proxy contract – upgradable');
       if (security.hidden_owner === '1') redFlags.push('Hidden owner detected');
       if (security.is_honeypot === '1') redFlags.push('Honeypot detected');
@@ -655,10 +664,12 @@ export default async function handler(req, res) {
     if (isEstablished) pros.push('✅ Established token');
 
     if (security?.is_honeypot === '1') cons.push('❌ Honeypot detected');
-    if (security && security.is_owner_renounced !== '1') cons.push('❌ Ownership not renounced');
+    if (security && security.is_owner_renounced !== '1') {
+      if (!isEstablished) cons.push('❌ Ownership not renounced');
+    }
     if (security?.is_mintable === '1') cons.push('❌ Mint function active');
     if (security?.is_blacklisted === '1') cons.push('❌ Blacklist function');
-    if (!liquidity.locked && security) cons.push('❌ Liquidity not locked');
+    if (!liquidity.locked && !isEstablished) cons.push('❌ Liquidity not locked');
     if (security?.is_proxy === '1') cons.push('❌ Upgradeable contract');
     if (typeof top10Ratio === 'number' && top10Ratio > 50) cons.push('❌ High whale concentration');
     if (typeof creatorPercent === 'number' && creatorPercent > 50 && security) {
@@ -672,14 +683,18 @@ export default async function handler(req, res) {
     // --- 32. Smart Money (placeholder) ---
     const smartMoney = { wallets: 0, netFlow: 'N/A', buys: 0, sells: 0 };
 
-    // --- 33. Build final response ---
+    // --- 33. Determine mode ---
+    const mode = isEstablished ? 'established' : 'presale';
+
+    // --- 34. Build final response ---
     const response = {
       success: true,
+      mode, // 'presale' or 'established'
       token: {
         name: tokenName,
         symbol: tokenSymbolFinal,
         address: cleanAddress,
-        chain: chain, // now correctly detected
+        chain: chain,
         totalSupply: totalSupply,
         decimals: decimals,
         createdAt: security?.created_at || 'N/A',
