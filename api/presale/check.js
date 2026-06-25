@@ -1,4 +1,42 @@
 import { getChainId } from '../../utils/chains.js';
+import {
+  Shield,
+  Lock,
+  Unlock,
+  AlertTriangle,
+  Search,
+  Coins,
+  CheckCircle,
+  XCircle,
+  Clock,
+  Zap,
+  Users,
+  FileCheck,
+  FileX,
+  ExternalLink,
+  TrendingUp,
+  Flame,
+  Globe,
+  Twitter,
+  Send,
+  MessageCircle,
+  Github,
+  Percent,
+  Wallet,
+  List,
+  BarChart3,
+  History,
+  User,
+  TrendingDown,
+  ArrowUp,
+  ArrowDown,
+  Eye,
+  EyeOff,
+  Activity,
+  LineChart,
+  Gauge,
+  PieChart,   // 👈 YEH ADD KARO
+} from "lucide-react";
 
 // --- Optional Upstash Redis (if available) ---
 let redis = null;
