@@ -15,7 +15,7 @@ try {
     });
     ratelimit = new Ratelimit({
       redis,
-      limiter: Ratelimit.fixedWindow(10, '10s'),
+      limiter: Ratelimit.fixedWindow(100, '60s'), // 🔥 100 requests per minute
       analytics: true,
     });
     useRedis = true;
@@ -27,9 +27,19 @@ try {
   console.warn('[Cache] Upstash not installed – using in-memory fallback');
 }
 
-// --- Fallback in-memory cache ---
+// --- Fallback in-memory cache with auto-cleanup ---
 const memoryCache = new Map();
-const CACHE_TTL = 30 * 60 * 1000;
+const CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+// Clean expired entries periodically (every 5 min)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, entry] of memoryCache.entries()) {
+    if (now - entry.timestamp > CACHE_TTL) {
+      memoryCache.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
 
 const getCached = async (key) => {
   if (useRedis) {
@@ -93,6 +103,9 @@ const parseHumanNumber = (str) => {
   return num;
 };
 
+// 🔥 New: toNum helper
+const toNum = (v) => Number(v) || 0;
+
 const KNOWN_DECIMALS = {
   '0x912ce59144191c1204e64559fe8253a0e49e6548':18,
   '0xb31f66aa3c1e785363f0875a1b74e27b85fd66c7':18,
@@ -105,7 +118,7 @@ const KNOWN_DECIMALS = {
   '0x539bde0d7dbd336b79148aa742883198bbf60342':18,
 };
 
-// --- LP Lock Check (unofficial) ---
+// --- LP Lock Check (unofficial) with 'unknown' fallback ---
 const fetchLiquidityLock = async (address, chain) => {
   try {
     const chainMap = { bsc:'bsc', ethereum:'ethereum', polygon:'polygon', arbitrum:'arbitrum', avalanche:'avalanche' };
@@ -117,7 +130,7 @@ const fetchLiquidityLock = async (address, chain) => {
       const lock = data.data.locks[0];
       return {
         locked: true,
-        percent: parseFloat(lock.lockedLiquidityPercent || 0),
+        percent: toNum(lock.lockedLiquidityPercent),
         unlockDate: lock.unlockDate || 'N/A',
         locker: 'PinkSale',
         lockAddress: lock.lockAddress,
@@ -125,8 +138,11 @@ const fetchLiquidityLock = async (address, chain) => {
         source: 'unofficial',
       };
     }
-    return null;
-  } catch { return null; }
+    return { locked: false, percent: 0, unlockDate: 'N/A', locker: 'N/A', source: 'No lock found' };
+  } catch {
+    // 🔥 API failure -> return 'unknown' instead of false
+    return { locked: 'unknown', percent: 0, unlockDate: 'N/A', locker: 'N/A', source: 'Unavailable' };
+  }
 };
 
 // --- Contract Verification (multi-chain) ---
@@ -183,7 +199,7 @@ const fetchSolanaMetadata = async (address) => {
   } catch { return null; }
 };
 
-// --- Risk Score ---
+// --- Risk Score (unchanged, but uses toNum internally) ---
 const calculateRiskScore = (security, market, holders, lock, isEstablished, securityUnavailable) => {
   if (securityUnavailable) return 50;
   if (security?.is_honeypot === '1') return 0;
@@ -197,14 +213,14 @@ const calculateRiskScore = (security, market, holders, lock, isEstablished, secu
   if (security?.is_owner_renounced !== '1') {
     score -= isEstablished ? 10 : 20;
   }
-  const top = parseFloat(security?.top_10_holder_balance_ratio || 0) * 100;
+  const top = toNum(security?.top_10_holder_balance_ratio) * 100;
   if (top > 50) score -= 20;
   else if (top > 30) score -= 10;
 
-  if (!isEstablished && !lock?.locked) score -= 10;
-  const liq = parseFloat(market?.liquidityUsd || 0);
+  if (!isEstablished && lock?.locked !== true) score -= 10;
+  const liq = toNum(market?.liquidityUsd);
   if (liq > 0 && liq < 10000) score -= 10;
-  const hCount = holders?.count || 0;
+  const hCount = toNum(holders?.count);
   if (hCount === 0) score -= 5;
   else if (hCount < 20) score -= 10;
   return Math.max(0, Math.min(100, score));
@@ -220,7 +236,7 @@ const getLetterGrade = (score) => {
 };
 const formatCurrency = (value) => {
   if (!value || value === 'N/A') return 'N/A';
-  const num = parseFloat(value);
+  const num = toNum(value);
   if (isNaN(num)) return 'N/A';
   if (num >= 1e9) return `$${(num / 1e9).toFixed(2)}B`;
   if (num >= 1e6) return `$${(num / 1e6).toFixed(2)}M`;
@@ -228,11 +244,11 @@ const formatCurrency = (value) => {
   return `$${num.toFixed(2)}`;
 };
 
-// --- Project Health Score ---
+// --- Project Health Score (unchanged) ---
 const calculateHealthScore = (riskScore, liquidity, verification, creatorPercent, marketData) => {
   let score = 0;
   score += riskScore * 0.4;
-  if (liquidity?.locked) score += 15;
+  if (liquidity?.locked === true) score += 15;
   if (verification?.verified) score += 15;
   if (typeof creatorPercent === 'number' && creatorPercent < 20) score += 10;
   if (marketData && marketData.liquidityUsd > 100000) score += 10;
@@ -240,13 +256,13 @@ const calculateHealthScore = (riskScore, liquidity, verification, creatorPercent
   return Math.min(100, Math.round(score));
 };
 
-// --- Moon Potential ---
+// --- Moon Potential (unchanged) ---
 const calculateMoonPotential = (marketCap, holders, ageDays, riskScore, liquidity, volume) => {
   if (marketCap === 'N/A' || holders === 'N/A') return 'N/A';
-  const mc = parseFloat(marketCap);
-  const hCount = parseInt(holders);
-  const vol = parseFloat(volume) || 0;
-  const liq = parseFloat(liquidity) || 0;
+  const mc = toNum(marketCap);
+  const hCount = toNum(holders);
+  const vol = toNum(volume);
+  const liq = toNum(liquidity);
   if (mc <= 0 || hCount <= 0) return 'N/A';
 
   let score = 0;
@@ -277,11 +293,11 @@ const calculateMoonPotential = (marketCap, holders, ageDays, riskScore, liquidit
   return Math.min(100, score);
 };
 
-// --- Hidden Gem ---
+// --- Hidden Gem (unchanged) ---
 const calculateHiddenGem = (marketCap, holders, ageDays, riskScore) => {
   if (marketCap === 'N/A' || holders === 'N/A') return 'N/A';
-  const mc = parseFloat(marketCap);
-  const hCount = parseInt(holders);
+  const mc = toNum(marketCap);
+  const hCount = toNum(holders);
   if (mc <= 0 || hCount <= 0) return 'N/A';
   let score = 0;
   if (mc < 500000) score += 35;
@@ -300,7 +316,7 @@ const calculateHiddenGem = (marketCap, holders, ageDays, riskScore) => {
   return Math.min(100, score);
 };
 
-// --- Rate Limiting ---
+// --- Rate Limiting (now 100 per minute) ---
 const checkRateLimit = async (ip) => {
   if (!ratelimit) return { success: true };
   try {
@@ -311,18 +327,13 @@ const checkRateLimit = async (ip) => {
 
 // --- MAIN HANDLER ---
 export default async function handler(req, res) {
-  // ==============================================
-  // 🔧 FIXED CORS – ALLOW ALL ORIGINS
-  // ==============================================
+  // CORS – Allow all origins
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  // Handle preflight (OPTIONS) request
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
-  // ==============================================
 
   try {
     // Rate limiting
@@ -334,7 +345,6 @@ export default async function handler(req, res) {
 
     let { address, chain = 'auto' } = req.query;
     if (!address) return res.status(400).json({ success: false, error: 'Token address required' });
-
     const cleanAddress = address.trim();
     const lowerAddress = cleanAddress.toLowerCase();
     const cacheKey = `${cleanAddress}:${chain}`;
@@ -347,27 +357,24 @@ export default async function handler(req, res) {
       const dexRes = await fetchWithTimeout(`https://api.dexscreener.com/latest/dex/tokens/${cleanAddress}`, {}, 8000);
       dexData = await safeJson(dexRes);
     } catch {}
-
     const allPairs = dexData?.pairs || [];
-    const validPairs = allPairs.filter(p => parseFloat(p.liquidity?.usd || 0) > 0);
+    const validPairs = allPairs.filter(p => toNum(p.liquidity?.usd) > 0);
 
     // --- Auto-detect chain ---
     let detectedChain = chain;
     if (chain === 'auto' && validPairs.length) {
-      const bestPair = validPairs.sort((a,b) => (b.liquidity?.usd||0) - (a.liquidity?.usd||0))[0];
+      const bestPair = validPairs.sort((a,b) => toNum(b.liquidity?.usd) - toNum(a.liquidity?.usd))[0];
       if (bestPair?.chainId) detectedChain = mapDexChain(bestPair.chainId);
     }
     if (detectedChain === 'auto') detectedChain = isSolanaAddress(cleanAddress) ? 'solana' : 'bsc';
-
     const isSolana = detectedChain === 'solana' || isSolanaAddress(cleanAddress);
     const chainIdNum = getGoPlusChainId(detectedChain);
 
-    // --- Parallel API calls ---
+    // --- Prepare promises (using allSettled) ---
+    const promises = [];
     let goplusData = null, lockData = null, verification = { verified: false, available: false };
     let solanaMeta = null;
     let securityUnavailable = false;
-
-    const promises = [];
 
     // GoPlus
     if (!isSolana) {
@@ -376,9 +383,7 @@ export default async function handler(req, res) {
           .then(async (r) => {
             const data = await safeJson(r);
             if (data?.result) {
-              const security = data.result[lowerAddress] ||
-                              data.result[cleanAddress] ||
-                              Object.values(data.result)[0];
+              const security = data.result[lowerAddress] || data.result[cleanAddress] || Object.values(data.result)[0];
               if (security) goplusData = { result: { [lowerAddress]: security } };
             }
             return data;
@@ -392,7 +397,7 @@ export default async function handler(req, res) {
       promises.push(Promise.resolve(null));
     }
 
-    // LP Lock (unofficial – may fail)
+    // LP Lock
     if (!isSolana) {
       promises.push(fetchLiquidityLock(cleanAddress, detectedChain).catch(() => null));
     } else {
@@ -413,33 +418,38 @@ export default async function handler(req, res) {
       promises.push(Promise.resolve(null));
     }
 
-    const [goplusResult, lockResult, verifyResult, solanaResult] = await Promise.all(promises);
+    // 🔥 Use Promise.allSettled to get all results even if some fail
+    const results = await Promise.allSettled(promises);
+
+    // Extract values (fallback to null)
+    const goplusResult = results[0]?.status === 'fulfilled' ? results[0].value : null;
+    const lockResult = results[1]?.status === 'fulfilled' ? results[1].value : null;
+    const verifyResult = results[2]?.status === 'fulfilled' ? results[2].value : { verified: false, available: false };
+    const solanaResult = results[3]?.status === 'fulfilled' ? results[3].value : null;
 
     const security = goplusResult?.result?.[lowerAddress] || null;
     lockData = lockResult;
-    verification = verifyResult || { verified: false, available: false };
+    verification = verifyResult;
     solanaMeta = solanaResult;
 
     // --- Best pair ---
     let bestPair = null;
     if (validPairs.length) {
       let chainPairs = validPairs.filter(p => mapDexChain(p.chainId) === detectedChain);
-      bestPair = chainPairs.length ? chainPairs.sort((a,b) => (b.liquidity?.usd||0) - (a.liquidity?.usd||0))[0]
-                                    : validPairs.sort((a,b) => (b.liquidity?.usd||0) - (a.liquidity?.usd||0))[0];
+      bestPair = chainPairs.length ? chainPairs.sort((a,b) => toNum(b.liquidity?.usd) - toNum(a.liquidity?.usd))[0] : validPairs.sort((a,b) => toNum(b.liquidity?.usd) - toNum(a.liquidity?.usd))[0];
     }
-
     const marketFromDex = bestPair ? {
       dex: bestPair.dexId,
-      liquidityUsd: parseFloat(bestPair.liquidity?.usd || 0),
-      marketCap: parseFloat(bestPair.marketCap || 0),
-      volume24h: parseFloat(bestPair.volume?.h24 || 0),
-      priceUsd: parseFloat(bestPair.priceUsd || 0),
-      priceChange24h: parseFloat(bestPair.priceChange?.h24 || 0),
+      liquidityUsd: toNum(bestPair.liquidity?.usd),
+      marketCap: toNum(bestPair.marketCap),
+      volume24h: toNum(bestPair.volume?.h24),
+      priceUsd: toNum(bestPair.priceUsd),
+      priceChange24h: toNum(bestPair.priceChange?.h24),
       pairAddress: bestPair.pairAddress,
       pairUrl: bestPair.url,
     } : null;
 
-    // --- CoinGecko (cached) ---
+    // --- CoinGecko (cached) - unchanged ---
     let geckoData = null;
     const tokenSymbol = security?.token_symbol || solanaMeta?.symbol || bestPair?.baseToken?.symbol || 'N/A';
     if (tokenSymbol !== 'N/A') {
@@ -455,7 +465,6 @@ export default async function handler(req, res) {
             let candidates = searchJson.coins.filter(c => c.symbol.toLowerCase() === tokenSymbol.toLowerCase());
             if (!candidates.length) candidates = searchJson.coins;
             candidates = candidates.slice(0, 2);
-
             let matchedCoin = null;
             const details = await Promise.all(candidates.map(c =>
               fetchWithTimeout(`https://api.coingecko.com/api/v3/coins/${c.id}`, {}, 5000)
@@ -465,7 +474,6 @@ export default async function handler(req, res) {
                 })
                 .catch(() => ({ id: c.id, data: null }))
             ));
-
             for (const { data } of details) {
               if (data) {
                 const platforms = data.platforms || {};
@@ -478,7 +486,6 @@ export default async function handler(req, res) {
                 if (matchedCoin) break;
               }
             }
-
             if (!matchedCoin) {
               let bestMc = -1;
               for (const { data } of details) {
@@ -488,7 +495,6 @@ export default async function handler(req, res) {
                 }
               }
             }
-
             if (matchedCoin) {
               const links = matchedCoin.links || {};
               const marketData = matchedCoin.market_data || {};
@@ -513,28 +519,31 @@ export default async function handler(req, res) {
               await setCached(geckoCacheKey, geckoData);
             }
           }
-        } catch (e) { console.error('Gecko error:', e); }
+        } catch (e) {
+          console.error('Gecko error:', e);
+        }
       }
     }
 
     // --- Token details ---
     let tokenName = security?.token_name || solanaMeta?.name || bestPair?.baseToken?.name || 'N/A';
     let tokenSymbolFinal = security?.token_symbol || solanaMeta?.symbol || bestPair?.baseToken?.symbol || 'N/A';
-
     let totalSupply = security?.total_supply || solanaMeta?.totalSupply || geckoData?.totalSupply || 'N/A';
     let decimals = security?.decimals || solanaMeta?.decimals || geckoData?.decimals || 'N/A';
     if (decimals === 'N/A' || decimals === 0 || isNaN(parseInt(decimals))) {
       if (KNOWN_DECIMALS[lowerAddress]) decimals = KNOWN_DECIMALS[lowerAddress];
       else decimals = 18;
-    } else { const d = parseInt(decimals); if (!isNaN(d)) decimals = d; }
+    } else {
+      const d = parseInt(decimals);
+      if (!isNaN(d)) decimals = d;
+    }
 
     let finalPrice = marketFromDex?.priceUsd || 0;
     if (geckoData?.priceUsd && geckoData.priceUsd !== 'N/A') {
-      const gPrice = parseFloat(geckoData.priceUsd);
+      const gPrice = toNum(geckoData.priceUsd);
       if (finalPrice === 0) finalPrice = gPrice;
       else if (gPrice > 0 && (finalPrice / gPrice > 2 || finalPrice / gPrice < 0.5)) finalPrice = gPrice;
     }
-
     let fdv = 'N/A';
     let totalSupplyNum = parseHumanNumber(totalSupply);
     if (!isNaN(totalSupplyNum) && totalSupplyNum > 0 && finalPrice > 0) fdv = totalSupplyNum * finalPrice;
@@ -547,22 +556,24 @@ export default async function handler(req, res) {
     else if (marketFromDex?.marketCap && marketFromDex.marketCap > 0) marketCap = marketFromDex.marketCap;
 
     // --- Holders ---
-    let holderCount = parseInt(security?.holder_count || 0);
-    if (holderCount === 0 && solanaMeta?.holders) {
-      holderCount = solanaMeta.holders;
-    }
+    let holderCount = toNum(security?.holder_count);
+    if (holderCount === 0 && solanaMeta?.holders) holderCount = solanaMeta.holders;
     let displayHolderCount = holderCount > 0 ? holderCount : 'N/A';
-
-    let top10Ratio = (parseFloat(security?.top_10_holder_balance_ratio || 0) * 100);
-    let creatorPercent = (parseFloat(security?.creator_percent || 0) * 100);
+    let top10Ratio = toNum(security?.top_10_holder_balance_ratio) * 100;
+    let creatorPercent = toNum(security?.creator_percent) * 100;
     let creatorAddress = security?.creator_address || solanaMeta?.creator || 'N/A';
     let creatorBalance = security?.creator_balance || 'N/A';
     if (holderCount === 0) { top10Ratio = 'N/A'; creatorPercent = 'N/A'; }
 
     const liqUsd = marketFromDex?.liquidityUsd || 0;
+    // 🔥 LP Lock: if locked === 'unknown', treat as not locked but show status
+    const isLocked = lockData?.locked === true;
+    const lockStatus = lockData?.locked === 'unknown' ? 'unknown' : (isLocked ? 'locked' : 'unlocked');
+
     const liquidity = {
       total: liqUsd,
-      locked: lockData?.locked || false,
+      locked: isLocked,
+      status: lockStatus,        // new: 'locked' | 'unlocked' | 'unknown'
       percent: lockData?.percent || 0,
       unlockDate: lockData?.unlockDate || 'N/A',
       locker: lockData?.locker || 'N/A',
@@ -584,7 +595,6 @@ export default async function handler(req, res) {
       else ageRisk = '🟢 Mature';
     }
 
-    // --- Is Established? ---
     const isEstablished = (() => {
       if (marketCap !== 'N/A' && typeof marketCap === 'number' && marketCap > 100000000) return true;
       if (holderCount > 100000) return true;
@@ -592,12 +602,11 @@ export default async function handler(req, res) {
       return false;
     })();
 
-    // --- Risk score ---
     const riskScore = calculateRiskScore(security, marketFromDex, { count: holderCount }, liquidity, isEstablished, securityUnavailable);
     const riskLevel = getRiskLevel(riskScore);
-
     const hasMarketData = marketFromDex !== null && marketFromDex.liquidityUsd > 0;
     const hasTrading = marketFromDex && marketFromDex.priceUsd > 0;
+
     let launch = {};
     if (hasTrading && hasMarketData) launch = { status: 'Active Trading', icon: '🟢', details: 'Token is actively trading with liquidity.' };
     else if (hasMarketData && !hasTrading) launch = { status: 'Liquidity Added (Pre-Launch)', icon: '🟡', details: 'Liquidity exists but no trading activity yet.' };
@@ -609,7 +618,7 @@ export default async function handler(req, res) {
     else if (hasMarketData && holderCount > 0 && liqUsd > 0) {
       let score = 70;
       if (riskScore > 80) score += 15;
-      if (liquidity.locked) score += 10;
+      if (isLocked) score += 10;
       if (security?.is_owner_renounced === '1') score += 10;
       if (liqUsd > 1000000) score += 10;
       if (holderCount > 100000) score += 5;
@@ -628,25 +637,19 @@ export default async function handler(req, res) {
 
     const moonPotential = calculateMoonPotential(marketCap, displayHolderCount, ageDays, riskScore, liqUsd, marketFromDex?.volume24h);
     const hiddenGemScore = calculateHiddenGem(marketCap, displayHolderCount, ageDays, riskScore);
-
     const gradeSecurity = riskScore !== 'N/A' ? getLetterGrade(riskScore) : 'D';
-    const gradeLiquidity = getLetterGrade(liquidity.locked ? 85 : (hasMarketData ? 50 : 0));
+    const gradeLiquidity = getLetterGrade(isLocked ? 85 : (hasMarketData ? 50 : 0));
     const gradeCommunity = getLetterGrade(communityScore);
     const gradeTokenomics = getLetterGrade(security?.is_mintable === '1' ? 40 : 80);
     const gradeOverall = (() => {
-      const scores = [
-        riskScore || 0,
-        liquidity.locked ? 85 : (hasMarketData ? 50 : 0),
-        communityScore || 0,
-        security?.is_mintable === '1' ? 40 : 80,
-      ];
+      const scores = [ riskScore || 0, isLocked ? 85 : (hasMarketData ? 50 : 0), communityScore || 0, security?.is_mintable === '1' ? 40 : 80 ];
       const avg = scores.reduce((a,b) => a+b, 0) / scores.length;
       return getLetterGrade(avg);
     })();
 
     const scoreBreakdown = {
       security: riskScore || 0,
-      liquidity: liquidity.locked ? 85 : (hasMarketData ? 50 : 0),
+      liquidity: isLocked ? 85 : (hasMarketData ? 50 : 0),
       community: communityScore,
       tokenomics: security?.is_mintable === '1' ? 40 : 80,
       developer: 50,
@@ -655,7 +658,7 @@ export default async function handler(req, res) {
     let readiness = 0;
     if (security) readiness += 20;
     if (hasMarketData && liqUsd > 0) readiness += 25;
-    if (liquidity.locked) readiness += 20;
+    if (isLocked) readiness += 20;
     if (geckoData?.social?.twitter !== 'N/A' || geckoData?.social?.telegram !== 'N/A') readiness += 15;
     if (typeof creatorPercent === 'number' && creatorPercent < 20) readiness += 10;
     if (readiness > 0 && readiness < 30) readiness = 10;
@@ -677,7 +680,7 @@ export default async function handler(req, res) {
     let scamSignals = 0;
     if (security?.is_honeypot === '1') scamSignals += 10;
     if (typeof creatorPercent === 'number' && creatorPercent > 90) scamSignals += 5;
-    if (!liquidity.locked && hasMarketData && !isEstablished) scamSignals += 3;
+    if (!isLocked && hasMarketData && !isEstablished) scamSignals += 3;
     if (holderCount > 0 && holderCount < 20) scamSignals += 2;
     if (!verification.verified && verification.available) scamSignals += 2;
     const scamRisk = scamSignals > 10 ? '🔴 High' : scamSignals > 5 ? '🟡 Medium' : '🟢 Low';
@@ -692,7 +695,7 @@ export default async function handler(req, res) {
       if (security.is_mintable === '1') redFlags.push('⚠️ Mint function enabled – supply can increase');
       if (security.is_blacklisted === '1') redFlags.push('⚠️ Blacklist function – addresses can be blocked');
       if (security.transfer_pausable === '1') redFlags.push('⚠️ Pause function – trading can be halted');
-      if (!liquidity.locked && !isEstablished) redFlags.push('⚠️ Liquidity is not locked');
+      if (!isLocked && !isEstablished) redFlags.push('⚠️ Liquidity is not locked');
       if (security.is_proxy === '1') redFlags.push('⚠️ Proxy contract – upgradable');
       if (security.hidden_owner === '1') redFlags.push('⚠️ Hidden owner detected');
       if (typeof creatorPercent === 'number' && creatorPercent > 50) redFlags.push(`⚠️ Developer owns ${creatorPercent.toFixed(1)}% – high centralization`);
@@ -706,7 +709,7 @@ export default async function handler(req, res) {
     const pros = [];
     const cons = [];
     if (riskScore > 70) pros.push('✅ Strong security score');
-    if (liquidity.locked) pros.push('✅ Liquidity is locked');
+    if (isLocked) pros.push('✅ Liquidity is locked');
     if (security?.is_owner_renounced === '1') pros.push('✅ Ownership renounced');
     if (security?.is_honeypot !== '1') pros.push('✅ No honeypot detected');
     if (liqUsd > 100000) pros.push('✅ High liquidity');
@@ -720,12 +723,10 @@ export default async function handler(req, res) {
     }
     if (security?.is_mintable === '1') cons.push('❌ Mint function active');
     if (security?.is_blacklisted === '1') cons.push('❌ Blacklist function');
-    if (!liquidity.locked && !isEstablished) cons.push('❌ Liquidity not locked');
+    if (!isLocked && !isEstablished) cons.push('❌ Liquidity not locked');
     if (security?.is_proxy === '1') cons.push('❌ Upgradeable contract');
     if (typeof top10Ratio === 'number' && top10Ratio > 50) cons.push('❌ High whale concentration');
-    if (typeof creatorPercent === 'number' && creatorPercent > 50 && security) {
-      cons.push(`❌ Developer owns ${creatorPercent.toFixed(1)}%`);
-    }
+    if (typeof creatorPercent === 'number' && creatorPercent > 50 && security) cons.push(`❌ Developer owns ${creatorPercent.toFixed(1)}%`);
     if (!verification.verified && verification.available) cons.push('❌ Contract not verified');
     if (securityUnavailable) cons.push('❌ Security scan unavailable');
 
@@ -747,11 +748,11 @@ export default async function handler(req, res) {
       aiVerdict = '⚠️ EXTREME CENTRALIZATION: Developer controls >90% supply and holder count is extremely low. High risk of manipulation.';
       overallRecommendation = 'Extreme Caution';
       summary = 'Highly centralized token with very few holders. Extremely high risk. Only for high-risk speculators.';
-    } else if (riskScore >= 80 && liquidity.locked && security?.is_owner_renounced === '1' && (typeof top10Ratio !== 'number' || top10Ratio < 30)) {
+    } else if (riskScore >= 80 && isLocked && security?.is_owner_renounced === '1' && (typeof top10Ratio !== 'number' || top10Ratio < 30)) {
       aiVerdict = 'This presale shows strong security, locked liquidity, and renounced ownership. Low risk.';
       overallRecommendation = 'Safe To Research Further';
       summary = 'Strong security, locked liquidity, and good holder distribution. Low risk presale.';
-    } else if (riskScore >= 60 && liquidity.locked) {
+    } else if (riskScore >= 60 && isLocked) {
       aiVerdict = 'Moderate risk. Some flags detected but liquidity is locked. Research further.';
       overallRecommendation = 'Caution Advised';
       summary = 'Moderate risk. Some flags, but key safety measures are in place.';
@@ -767,8 +768,8 @@ export default async function handler(req, res) {
 
     // --- Tax & Narrative ---
     const tax = {
-      buy: parseFloat(security?.buy_tax || 0),
-      sell: parseFloat(security?.sell_tax || 0),
+      buy: toNum(security?.buy_tax),
+      sell: toNum(security?.sell_tax),
       transfer: 0,
     };
     const narrative = { narrative: 'Other', strength: 5, trend: 'Unknown' };
@@ -819,12 +820,7 @@ export default async function handler(req, res) {
     }
 
     // --- Smart Money (safe) ---
-    const smartMoney = {
-      wallets: 'N/A',
-      netFlow: 'N/A',
-      buys: 'N/A',
-      sells: 'N/A',
-    };
+    const smartMoney = { wallets: 'N/A', netFlow: 'N/A', buys: 'N/A', sells: 'N/A' };
 
     // --- Developer (honest) ---
     const developerData = {
@@ -834,28 +830,23 @@ export default async function handler(req, res) {
       rugWarnings: ['⚠️ Advanced developer history requires on-chain RPC. Coming soon.'],
     };
 
-    // --- LP Burn & Rug History (honest) ---
+    // --- LP Burn & Rug History ---
     const lpBurn = lockData?.lockAddress && lockData.lockAddress.toLowerCase() === '0x000000000000000000000000000000000000dead' ? true : false;
     const rugHistory = null;
 
     // --- EXTRA FIELDS FOR LP LOCK CHECKER ---
-    // 1. Dev Wallet
     const devWallet = {
       address: creatorAddress,
       balance: creatorBalance,
       percent: typeof creatorPercent === 'number' ? creatorPercent : 'N/A',
       isActive: typeof creatorPercent === 'number' && creatorPercent > 0,
     };
-
-    // 2. Distribution (estimate)
     const distribution = {
-      liquidity: liquidity.locked ? liquidity.percent : 0,
+      liquidity: isLocked ? liquidity.percent : 0,
       burn: lpBurn ? 5 : 0,
       dev: typeof creatorPercent === 'number' ? creatorPercent : 0,
-      community: Math.max(0, 100 - (liquidity.locked ? liquidity.percent : 0) - (lpBurn ? 5 : 0) - (typeof creatorPercent === 'number' ? creatorPercent : 0)),
+      community: Math.max(0, 100 - (isLocked ? liquidity.percent : 0) - (lpBurn ? 5 : 0) - (typeof creatorPercent === 'number' ? creatorPercent : 0)),
     };
-
-    // 3. Top Holders (only creator if available)
     const topHolders = [];
     if (creatorAddress && creatorAddress !== 'N/A' && creatorAddress !== '0x0000000000000000000000000000000000000000') {
       topHolders.push({
@@ -864,12 +855,11 @@ export default async function handler(req, res) {
         isCreator: true,
       });
     }
-
-    // 4. Locker Trust Score
-    const lockerTrustScore = (lockData?.locker) ? (lockData.locker.toLowerCase().includes('pink') || lockData.locker.toLowerCase().includes('team') || lockData.locker.toLowerCase().includes('unicrypt') ? 'trusted' : 'untrusted') : 'unknown';
-
-    // 5. Multi-lock (placeholder)
-    const multiLock = null; // not available
+    const lockerTrustScore = (lockData?.locker) ?
+      (lockData.locker.toLowerCase().includes('pink') || lockData.locker.toLowerCase().includes('team') || lockData.locker.toLowerCase().includes('unicrypt') ?
+        'trusted' : 'untrusted') :
+      'unknown';
+    const multiLock = null;
 
     // --- Build response ---
     const response = {
@@ -911,14 +901,14 @@ export default async function handler(req, res) {
         creatorPercent: typeof creatorPercent === 'number' ? creatorPercent : 'N/A',
         creatorAddress,
         creatorBalance,
-        topHolders, // new
+        topHolders,
       },
       market: {
         price: finalPrice || 'N/A',
         priceChange24h: marketFromDex?.priceChange24h || 'N/A',
         liquidity: liqUsd || 'N/A',
         volume24h: marketFromDex?.volume24h || 'N/A',
-        volume7d: marketFromDex?.volume7d || 'N/A', // new
+        volume7d: marketFromDex?.volume7d || 'N/A',
         marketCap,
         fdv,
         chain: detectedChain,
@@ -971,7 +961,6 @@ export default async function handler(req, res) {
       lpBurn,
       rugHistory,
       solana: solanaMeta,
-      // --- NEW FIELDS FOR LP CHECKER ---
       devWallet,
       distribution,
       lockerTrustScore,
