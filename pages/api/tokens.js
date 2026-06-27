@@ -1,17 +1,28 @@
+// pages/api/tokens.js
 import { createClient } from '@supabase/supabase-js';
 
+// ✅ FIX: Use SUPABASE_URL (not NEXT_PUBLIC_)
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 export default async function handler(req, res) {
-  const { chain, page = 1, limit = 50, sort = 'volume24h', order = 'desc' } = req.query;
+  // ✅ CORS Headers
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
+  const { chain, page = 1, limit = 50, sort = 'volume_24h', order = 'desc' } = req.query;
   const offset = (parseInt(page) - 1) * parseInt(limit);
 
-  // Allowed sort columns
-  const allowedSort = ['volume24h', 'liquidity', 'market_cap', 'price', 'change_24h'];
-  const sortColumn = allowedSort.includes(sort) ? sort : 'volume24h';
+  // ✅ FIX: Use correct column names (with underscore)
+  const allowedSort = ['volume_24h', 'liquidity', 'market_cap', 'price', 'change_24h'];
+  const sortColumn = allowedSort.includes(sort) ? sort : 'volume_24h';
   const orderDirection = order === 'asc' ? true : false;
 
   let query = supabase
