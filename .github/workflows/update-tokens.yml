@@ -1,0 +1,23 @@
+name: Update Tokens
+on:
+  schedule:
+    - cron: '0 * * * *'   # Har ek ghante automatic chalega
+  workflow_dispatch:      # Isse aap GitHub par jaakar manually bhi click karke chala sakte ho
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - uses: actions/setup-node@v3
+        with:
+          node-version: '20' # Aapki node version ke match karne ke liye
+          
+      - name: Install dependencies
+        run: npm install
+        
+      - name: Run Crypto Worker
+        run: node scripts/worker.cjs # Humne .cjs banaya tha, toh wahi chalega
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
