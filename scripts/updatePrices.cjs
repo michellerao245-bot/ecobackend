@@ -39,6 +39,7 @@ async function fetchPancakeSwapPrice(address) {
       price: parseFloat(data.price) || 0,
       liquidity: parseFloat(data.liquidity) || 0,
       volume: parseFloat(data.volume_24h) || 0,
+      logo: data.logo || null,
       source: 'pancakeswap',
     };
   } catch { return null; }
@@ -68,6 +69,7 @@ async function fetchUniswapPrice(address) {
     return {
       price: parseFloat(dayData.priceUSD) || 0,
       volume: parseFloat(dayData.volumeUSD) || 0,
+      logo: null,
       source: 'uniswap',
     };
   } catch { return null; }
@@ -82,6 +84,7 @@ async function fetchBirdeyePrice(address) {
       price: parseFloat(data.value) || 0,
       liquidity: parseFloat(data.liquidity) || 0,
       volume: parseFloat(data.volume24h) || 0,
+      logo: data.logo || null,
       source: 'birdeye',
     };
   } catch { return null; }
@@ -108,6 +111,7 @@ async function fetchQuickswapPrice(address) {
     return {
       price: parseFloat(data.derivedETH) * 3000 || 0,
       volume: parseFloat(data.tradeVolumeUSD) || 0,
+      logo: null,
       source: 'quickswap',
     };
   } catch { return null; }
@@ -133,6 +137,7 @@ async function fetchCamelotPrice(address) {
     return {
       price: 0,
       volume: parseFloat(data.volumeUSD) || 0,
+      logo: null,
       source: 'camelot',
     };
   } catch { return null; }
@@ -158,6 +163,7 @@ async function fetchAerodromePrice(address) {
     return {
       price: 0,
       volume: parseFloat(data.volumeUSD) || 0,
+      logo: null,
       source: 'aerodrome',
     };
   } catch { return null; }
@@ -183,6 +189,7 @@ async function fetchTraderJoePrice(address) {
     return {
       price: 0,
       volume: parseFloat(data.volumeUSD) || 0,
+      logo: null,
       source: 'traderjoe',
     };
   } catch { return null; }
@@ -208,6 +215,7 @@ async function fetchVelodromePrice(address) {
     return {
       price: 0,
       volume: parseFloat(data.volumeUSD) || 0,
+      logo: null,
       source: 'velodrome',
     };
   } catch { return null; }
@@ -279,6 +287,7 @@ async function fetchCoinGeckoPrice(address, chain) {
       price: data.usd || 0,
       marketCap: data.usd_market_cap || 0,
       volume: data.usd_24h_vol || 0,
+      logo: null,
       source: 'coingecko',
     };
   } catch { return null; }
@@ -290,6 +299,7 @@ async function fetchBinancePrice(symbol) {
     const response = await axios.get(url, { timeout: 5000 });
     return {
       price: parseFloat(response.data.price) || 0,
+      logo: null,
       source: 'binance',
     };
   } catch { return null; }
@@ -348,8 +358,11 @@ async function updatePrices() {
       for (const token of batch) {
         let data = priceMap[token.token_address] || priceMap[token.pair_address];
         let priceData = null;
+        let logo = null;
 
         if (data) {
+          // ✅ Get logo from DexScreener
+          logo = data.baseToken?.logo || data.baseToken?.logoURI || null;
           priceData = {
             price: parseFloat(data.priceUsd) || 0,
             volume_24h: parseFloat(data.volume?.h24) || 0,
@@ -362,6 +375,8 @@ async function updatePrices() {
         } else {
           const dexData = await fetchChainSpecificPrice(token.token_address, chain);
           if (dexData) {
+            // ✅ Get logo from chain-specific DEX
+            logo = dexData.logo || null;
             priceData = {
               price: dexData.price || 0,
               volume_24h: dexData.volume || 0,
@@ -374,6 +389,7 @@ async function updatePrices() {
           } else {
             const geckoData = await fetchCoinGeckoPrice(token.token_address, chain);
             if (geckoData) {
+              logo = null;
               priceData = {
                 price: geckoData.price || 0,
                 volume_24h: geckoData.volume || 0,
@@ -386,6 +402,7 @@ async function updatePrices() {
             } else {
               const binanceData = await fetchBinancePrice(token.symbol);
               if (binanceData) {
+                logo = null;
                 priceData = {
                   price: binanceData.price || 0,
                   volume_24h: 0,
@@ -401,17 +418,18 @@ async function updatePrices() {
         }
 
         if (priceData && priceData.price > 0) {
-          // ✅ Include chain to avoid NOT NULL constraint
+          // ✅ Include logo in update
           updates.push({
             token_address: token.token_address,
             pair_address: token.pair_address,
-            chain: token.chain,                    // ✅ ADD CHAIN
+            chain: token.chain,
             price: priceData.price,
             volume_24h: priceData.volume_24h || 0,
             liquidity: priceData.liquidity || 0,
             fdv: priceData.fdv || 0,
             market_cap: priceData.market_cap || 0,
             change_24h: priceData.change_24h || 0,
+            logo: logo || null,                    // ✅ LOGO ADDED
             last_price_update: now,
             updated_at: now,
             price_source: priceData.source || 'unknown',

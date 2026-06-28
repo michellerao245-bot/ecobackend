@@ -915,7 +915,7 @@ async function fetchPairsForChain(chain) {
 }
 
 // ============================================
-// FORMAT TOKEN
+// FORMAT TOKEN (with Logo Support)
 // ============================================
 function formatToken(pair, chain) {
   const price = parseFloat(pair.priceUsd) || 0;
@@ -932,6 +932,8 @@ function formatToken(pair, chain) {
     dex: pair.dexId || 'Unknown',
     symbol: pair.baseToken?.symbol || 'N/A',
     name: pair.baseToken?.name || 'N/A',
+    // ✅ LOGO FIELD ADDED
+    logo: pair.baseToken?.logo || pair.baseToken?.logoURI || null,
     price: price,
     change_24h: change24h,
     volume_24h: volume,
@@ -956,7 +958,6 @@ function formatToken(pair, chain) {
     updated_at: new Date().toISOString(),
   };
 }
-
 // ============================================
 // SAVE BATCH
 // ============================================
