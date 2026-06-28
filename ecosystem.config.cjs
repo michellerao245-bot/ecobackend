@@ -72,30 +72,81 @@ module.exports = {
       cron_restart: '*/5 * * * *',
     },
 
-    // ============================================
-    // 4. MARKET CAP WORKER (Updates market data)
-    // ============================================
+   // ecosystem.config.cjs
+module.exports = {
+  apps: [
+    {
+      name: 'ecolive-scheduler',
+      script: './scripts/scheduler.cjs',
+      node_args: '-r dotenv/config',
+      env: { NODE_ENV: 'production' },
+      autorestart: true,
+      max_memory_restart: '500M',
+    },
+    {
+      name: 'ecolive-crawler',
+      script: './scripts/crawler.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+    },
+    {
+      name: 'ecolive-price-updater',
+      script: './scripts/updatePrices.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '*/5 * * * *',  // ✅ Every 5 minutes
+    },
+    {
+      name: 'ecolive-trending',
+      script: './scripts/trendingWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '*/15 * * * *', // ✅ Every 15 minutes
+    },
+    {
+      name: 'ecolive-security',
+      script: './scripts/securityWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '0 * * * *',    // ✅ Every hour
+    },
+    {
+      name: 'ecolive-newpairs',
+      script: './scripts/newPairsWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '*/30 * * * *', // ✅ Every 30 minutes
+    },
+    {
+      name: 'ecolive-smartmoney',
+      script: './scripts/smartMoneyWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '0 * * * *',    // ✅ Every hour
+    },
+    {
+      name: 'ecolive-whale',
+      script: './scripts/whaleWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '*/10 * * * *', // ✅ Every 10 minutes
+    },
+    {
+      name: 'ecolive-holders',
+      script: './scripts/holdersWorker.cjs',
+      node_args: '-r dotenv/config',
+      autorestart: true,
+      cron_restart: '0 */2 * * *',  // ✅ Every 2 hours
+    },
     {
       name: 'ecolive-marketcap',
       script: './scripts/marketCapWorker.cjs',
-      interpreter: 'node',
-      instances: 1,
-      exec_mode: 'fork',
-      watch: false,
+      node_args: '-r dotenv/config',
       autorestart: true,
-      max_memory_restart: '500M',
-      env: {
-        NODE_ENV: 'production',
-        WORKER_TYPE: 'marketcap',
-      },
-      error_file: './logs/marketcap-error.log',
-      out_file: './logs/marketcap-out.log',
-      log_file: './logs/marketcap-combined.log',
-      time: true,
-      // Run every 5 minutes
-      cron_restart: '*/5 * * * *',
+      cron_restart: '0 * * * *',    // ✅ Every hour
     },
-
+  ]
+},
     // ============================================
     // 5. TRENDING WORKER (Calculates trending)
     // ============================================
