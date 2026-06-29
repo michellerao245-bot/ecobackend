@@ -915,6 +915,25 @@ async function fetchPairsForChain(chain) {
 }
 
 // ============================================
+// TRUSTWALLET LOGO HELPER
+// ============================================
+function getTrustWalletLogo(address, chain) {
+  if (!address) return null;
+  const chainMap = {
+    bsc: 'smartchain',
+    ethereum: 'ethereum',
+    polygon: 'polygon',
+    arbitrum: 'arbitrum',
+    base: 'base',
+    avalanche: 'avalanche',
+    optimism: 'optimism',
+    solana: 'solana',
+  };
+  const chainName = chainMap[chain] || 'ethereum';
+  return `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/${chainName}/assets/${address}/logo.png`;
+}
+
+// ============================================
 // FORMAT TOKEN (with Logo Support)
 // ============================================
 function formatToken(pair, chain) {
@@ -925,15 +944,20 @@ function formatToken(pair, chain) {
   const marketCap = parseFloat(pair.marketCap) || 0;
   const change24h = parseFloat(pair.priceChange?.h24) || 0;
 
+  const address = pair.baseToken?.address;
+  const symbol = pair.baseToken?.symbol;
+
   return {
-    token_address: pair.baseToken?.address || pair.pairAddress,
+    token_address: address || pair.pairAddress,
     pair_address: pair.pairAddress,
     chain: chain,
     dex: pair.dexId || 'Unknown',
-    symbol: pair.baseToken?.symbol || 'N/A',
+    symbol: symbol || 'N/A',
     name: pair.baseToken?.name || 'N/A',
-    // ✅ LOGO FIELD ADDED
-    logo: pair.baseToken?.logo || pair.baseToken?.logoURI || null,
+    
+    // ✅ LOGO: TrustWallet se fetch karo (fast, no API call)
+    logo: getTrustWalletLogo(address, chain),
+    
     price: price,
     change_24h: change24h,
     volume_24h: volume,
