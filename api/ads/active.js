@@ -1,17 +1,19 @@
 // ecobackend/api/ads/active.js
 import { createClient } from '@supabase/supabase-js';
 
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY);
 
 export default async function handler(req, res) {
-  // ✅ CORS Headers configured specifically for your frontend
-  res.setHeader('Access-Control-Allow-Origin', 'https://soltlive.vercel.app');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // 🌟 [IMPORTANT] Vercel Node Serverless CORS Headers Setup
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Allow-Origin', '*'); // Yeh line CORS error ko jad se khatam kar degi
+  res.setHeader('Access-Control-Allow-Methods', 'GET,OPTIONS,PATCH,DELETE,POST,PUT');
+  res.setHeader(
+    'Access-Control-Allow-Headers',
+    'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
+  );
 
+  // Preflight Request (OPTIONS) handling
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }
@@ -21,30 +23,30 @@ export default async function handler(req, res) {
   }
 
   try {
-    // 📝 Supabase se wahi ad uthao jo Admin Panel se APPROVED ho chuki hai
     const { data, error } = await supabase
-      .from('advertisements') // ⚠️ Agar Supabase me table ka naam 'ads' hai, toh ise 'ads' kar dena
+      .from('advertisements')
       .select('*')
-      .eq('status', 'approved') // Sirf approved ads dikhani hain
-      .order('created_at', { ascending: false }) // Latest approved ad sabse pehle
+      .eq('status', 'approved')
+      .order('created_at', { ascending: false })
       .limit(1)
-      .maybeSingle(); // Ek hi single object return karega (ya fir null agar ad na ho)
+      .maybeSingle();
 
-    if (error) {
-      console.error("Supabase Error:", error);
-      return res.status(500).json({ success: false, error: error.message });
-    }
+    if (error) return res.status(500).json({ success: false, error: error.message });
+    if (!data) return res.status(200).json(null);
 
-    // Agar koi ad approved nahi hai toh default template chalega frontend par
-    if (!data) {
-      return res.status(200).json(null);
-    }
-
-    // ✅ Approved ad mil gayi, bhej do frontend ko!
-    return res.status(200).json(data);
+    // Frontend layout ko dynamic data provide kar rahe hain
+    return res.status(200).json({
+      status: data.status,
+      projectName: data.project_name, 
+      description: data.description,
+      hasBanner: data.has_banner,
+      bannerPreview: data.banner_preview, 
+      website: data.website,
+      telegram: data.telegram,
+      plan: data.plan
+    });
 
   } catch (error) {
-    console.error("Catch Error:", error);
     return res.status(500).json({ success: false, error: error.message });
   }
 }
