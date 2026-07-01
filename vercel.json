@@ -1,23 +1,15 @@
-{
-  "version": 2,
-  "builds": [
-    {
-      "src": "pages/api/tokens.js",
-      "use": "@vercel/node"
-    },
-    {
-      "src": "api/**/*.js",
-      "use": "@vercel/node"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/api/tokens",
-      "dest": "pages/api/tokens.js"
-    },
-    {
-      "src": "/api/(.*)",
-      "dest": "api/$1"
-    }
-  ]
+{ 
+  "version": 2, 
+  "builds": [ 
+    { 
+      "src": "pages/api/**/*.js", 
+      "use": "@vercel/node" 
+    } 
+  ], 
+  "routes": [ 
+    { 
+      "src": "/api/(.*)", 
+      "dest": "pages/api/$1.js" 
+    } 
+  ] 
 }
